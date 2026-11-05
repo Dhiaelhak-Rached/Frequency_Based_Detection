@@ -59,6 +59,7 @@ class MultiDeviceAudioManager:
         self.streams: Dict[str, sd.InputStream] = {}
         self.buffers: Dict[str, np.ndarray] = {}
         self.active_devices: Dict[str, Tuple[int, str]] = {}
+        self.enabled_arrays = set(self.geo.arrays)
         self.lock = threading.Lock()
         self.is_running = False
 
@@ -100,13 +101,15 @@ class MultiDeviceAudioManager:
                 })
         return devices
 
-    def start(self, device_map: Optional[Dict[str, Union[int, str]]] = None):
-        """Start audio capture streams or simulation loop.
-
-        device_map: {"front": dev_idx_or_name, "left": dev_idx_or_name, "right": dev_idx_or_name}
-        """
+    def start(
+        self,
+        device_map: Optional[Dict[str, Union[int, str]]] = None,
+        array_ids: Optional[List[str]] = None,
+    ):
+        """Start capture for the selected arrays or run them in simulation mode."""
         if self.is_running:
             return
+        self.enabled_arrays = set(array_ids) if array_ids is not None else set(self.geo.arrays)
         self.is_running = True
 
         if self.simulate:
@@ -114,6 +117,8 @@ class MultiDeviceAudioManager:
 
         # Hardware capture mode
         for arr_id, arr in self.geo.arrays.items():
+            if arr_id not in self.enabled_arrays:
+                continue
             req_channels = 16 if arr.array_type == "uma16" else 7
             dev_idx = None
 
@@ -178,13 +183,13 @@ class MultiDeviceAudioManager:
         self.active_devices.clear()
 
     def get_latest_blocks(self) -> Dict[str, np.ndarray]:
-        """Fetch synchronized audio blocks for all arrays."""
+        """Fetch the latest audio blocks from the selected arrays."""
         if self.simulate:
             return self._generate_simulated_blocks()
 
         with self.lock:
             out = {}
-            for arr_id in self.geo.arrays:
+            for arr_id in self.enabled_arrays:
                 if arr_id in self.buffers:
                     out[arr_id] = self.buffers[arr_id].copy()
             return out
@@ -211,6 +216,8 @@ class MultiDeviceAudioManager:
         out = {}
 
         for arr_id, arr in self.geo.arrays.items():
+            if arr_id not in self.enabled_arrays:
+                continue
             n_channels = 8 if arr.array_type == "uma8" else 16
             block = np.zeros((self.blocksize, n_channels), dtype=np.float32)
 

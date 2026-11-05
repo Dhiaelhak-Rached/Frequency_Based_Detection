@@ -197,6 +197,14 @@ class TacticalGUI:
         )
         chk_sim.pack(side="left", padx=(14, 8))
 
+        self.var_front_only = tk.BooleanVar(value=False)
+        chk_front = tk.Checkbutton(
+            act_row, text="UMA-8 Only", variable=self.var_front_only, bg=PANEL, fg=FG,
+            selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
+            command=self.on_array_mode_change,
+        )
+        chk_front.pack(side="left", padx=(4, 8))
+
         # Scale slider
         tk.Label(act_row, text="Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
         self.slider_zoom = tk.Scale(
@@ -225,6 +233,26 @@ class TacticalGUI:
         else:
             self.status_lbl.configure(text="STANDBY" if not self.is_active else "LISTENING", fg=FG)
 
+    def _device_map(self):
+        return {
+            "front": self.var_dev_front.get().strip(),
+            "left": self.var_dev_left.get().strip(),
+            "right": self.var_dev_right.get().strip(),
+        }
+
+    def _selected_array_ids(self):
+        return ["front"] if self.var_front_only.get() else list(self.geo.arrays)
+
+    def on_array_mode_change(self):
+        self._clear_target_telemetry()
+        for doa_eng in self.doa_engines.values():
+            doa_eng.reset()
+        self.audio_mgr.enabled_arrays = set(self._selected_array_ids())
+        if self.is_active:
+            self.audio_mgr.stop()
+            self.audio_mgr.start(device_map=self._device_map(), array_ids=self._selected_array_ids())
+            self.status_lbl.configure(text="SEARCHING...", fg=ACCENT)
+
     def on_toggle_listening(self):
         if not self.is_active:
             try:
@@ -237,12 +265,7 @@ class TacticalGUI:
 
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
             self.save_config()
-            dev_map = {
-                "front": self.var_dev_front.get().strip(),
-                "left": self.var_dev_left.get().strip(),
-                "right": self.var_dev_right.get().strip(),
-            }
-            self.audio_mgr.start(device_map=dev_map)
+            self.audio_mgr.start(device_map=self._device_map(), array_ids=self._selected_array_ids())
             self.is_active = True
             self.btn_toggle.configure(text="STOP", bg=WARN, activebackground="#da3633")
             self.status_lbl.configure(text="SEARCHING...", fg=ACCENT)
@@ -302,33 +325,38 @@ class TacticalGUI:
         det_ch = det_block[:, 0]
         det_res = self.detector.process(det_ch, low, high)
 
-        # 2. Narrowband DOA for each array
+        # 2. Narrowband DOA for each selected array
         bearings = {}
         prominences = {}
         doa_errors = {}
-        for arr_id, doa_eng in self.doa_engines.items():
+        doa_results = {}
+        for arr_id in self._selected_array_ids():
             if arr_id in blocks:
-                # Steer ONLY on detected target frequency bin if detected, else user band
+                doa_eng = self.doa_engines[arr_id]
                 target_f = det_res.peak_freq if det_res.detected else None
                 res = doa_eng.estimate(blocks[arr_id], target_freq=target_f, band=(low, high))
+                doa_results[arr_id] = res
                 bearings[arr_id] = res.global_angle_deg
                 prominences[arr_id] = res.prominence
                 doa_errors[arr_id] = res.error
 
-        # 3. Spatial Triangulation
-        tri_res = self.triangulator.triangulate(bearings, prominences)
+        front_doa = doa_results.get("front") if self.var_front_only.get() else None
+        if front_doa is not None or not det_res.detected:
+            tri_res = self.triangulator.triangulate({}, {})
+        else:
+            tri_res = self.triangulator.triangulate(bearings, prominences)
 
-        # 4. Update Telemetry & UI
-        self._update_telemetry(det_res, tri_res, doa_errors)
+        # 3. Update Telemetry & UI
+        self._update_telemetry(det_res, tri_res, doa_errors, front_doa)
         self._draw_spectrum(det_res)
-        self._draw_tactical_map(tri_res)
+        self._draw_tactical_map(tri_res, front_doa if det_res.detected else None)
 
     def _clear_target_telemetry(self):
         self.lbl_range.configure(text="-.-- m", fg=MUTED)
         self.lbl_bearing.configure(text="---.-°", fg=MUTED)
         self.lbl_coords.configure(text="X: -.--  Y: -.--", fg=MUTED)
 
-    def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator, doa_errors=None):
+    def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator, doa_errors=None, front_doa=None):
         if det.peak_freq is not None:
             self.lbl_freq.configure(text=f"{det.peak_freq:6.1f} Hz", fg=WARN if det.detected else FG)
         else:
@@ -336,6 +364,24 @@ class TacticalGUI:
 
         if det.peak_db is not None:
             self.lbl_level.configure(text=f"{det.peak_db:5.1f} dBFS", fg=WARN if det.detected else FG)
+
+        if front_doa is not None:
+            if det.detected and front_doa.global_angle_deg is not None and front_doa.prominence >= 1.4:
+                self.status_lbl.configure(text="UMA-8 ONLY / BEARING LOCK", fg=OK, bg="#1a2733")
+                self.lbl_range.configure(text="-.-- m", fg=MUTED)
+                self.lbl_bearing.configure(text=f"{front_doa.global_angle_deg:5.1f}°", fg=OK)
+                self.lbl_coords.configure(text="DIRECTION ONLY", fg=MUTED)
+            elif det.detected:
+                if front_doa.error == "spatial_aliasing":
+                    status = f"FREQ OK / DOA BLOCKED ABOVE {self.doa_engines['front'].max_direction_freq_hz:.0f} Hz"
+                else:
+                    status = "FREQ DETECTED (WAITING UMA-8 BEARING)"
+                self.status_lbl.configure(text=status, fg=WARN, bg="#2b2010")
+                self._clear_target_telemetry()
+            else:
+                self.status_lbl.configure(text="UMA-8 ONLY / SCANNING", fg=ACCENT, bg="#1a2733")
+                self._clear_target_telemetry()
+            return
 
         if det.detected:
             if tri.success and tri.x is not None and tri.y is not None:
@@ -345,7 +391,7 @@ class TacticalGUI:
                 self.lbl_coords.configure(text=f"X:{tri.x:+4.2f}m  Y:{tri.y:+4.2f}m", fg=OK)
             else:
                 if doa_errors and all(err == "spatial_aliasing" for err in doa_errors.values()):
-                    max_safe_freq = min(eng.max_direction_freq_hz for eng in self.doa_engines.values())
+                    max_safe_freq = min(self.doa_engines[arr_id].max_direction_freq_hz for arr_id in doa_errors)
                     status = f"FREQ OK / DOA BLOCKED ABOVE {max_safe_freq:.0f} Hz"
                 else:
                     status = "FREQ DETECTED (WAITING VALID TRIANGULATION)"
@@ -410,7 +456,7 @@ class TacticalGUI:
             c.create_line(tx, h - 5, tx, h, fill=MUTED)
             c.create_text(tx, h - 12, text=f"{f_tick/1000:g}k", fill=MUTED, font=("Monospace", 7))
 
-    def _draw_tactical_map(self, tri):
+    def _draw_tactical_map(self, tri, front_doa=None):
         c = self.canvas_radar
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
@@ -437,8 +483,10 @@ class TacticalGUI:
         def to_canvas(x_m, y_m):
             return ox + x_m * self.map_scale, oy - y_m * self.map_scale
 
-        # Draw the Wedge Rig
+        # Draw the selected array geometry
         for arr_id, arr in self.geo.arrays.items():
+            if self.var_front_only.get() and arr_id != "front":
+                continue
             cx, cy = to_canvas(arr.center[0], arr.center[1])
             col = RAY_FRONT if arr_id == "front" else (RAY_LEFT if arr_id == "left" else RAY_RIGHT)
             if arr.array_type == "uma8":
@@ -448,8 +496,17 @@ class TacticalGUI:
                 c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 16, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))
 
-        # Draw one validated result from the rig origin to the target
-        if tri.success and tri.x is not None and tri.y is not None:
+        if front_doa is not None and front_doa.global_angle_deg is not None and front_doa.prominence >= 1.4:
+            angle = np.deg2rad(front_doa.global_angle_deg)
+            origin = to_canvas(*self.geo.arrays["front"].center)
+            endpoint = to_canvas(
+                self.geo.arrays["front"].center[0] + 2.0 * np.sin(angle),
+                self.geo.arrays["front"].center[1] + 2.0 * np.cos(angle),
+            )
+            c.create_line(origin[0], origin[1], endpoint[0], endpoint[1], fill=RAY_FRONT, width=3, arrow="last")
+            c.create_text(origin[0] + 10, origin[1] - 16, text="UMA-8 DIRECTION ONLY",
+                          fill=RAY_FRONT, anchor="w", font=("Helvetica", 8, "bold"))
+        elif tri.success and tri.x is not None and tri.y is not None:
             tx, ty = to_canvas(tri.x, tri.y)
             origin = to_canvas(0.0, 0.0)
             c.create_line(origin[0], origin[1], tx, ty, fill=WARN, width=3)

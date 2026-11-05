@@ -35,12 +35,21 @@ python3 main.py gui
 
 # In simulation mode (no hardware required):
 python3 main.py gui --simulate
+
+# Front UMA-8 only (direction without range or coordinates):
+python3 main.py gui --uma8-only
 ```
+
+The GUI also provides a **UMA-8 Only** checkbox. Switching modes while listening
+restarts capture with only the selected arrays.
 
 ### 2. Headless Terminal Tracking (CLI)
 ```bash
 # Monitor drone whine between 900 and 1100 Hz:
 python3 main.py cli --low 900 --high 1100 --threshold -65
+
+# Front UMA-8 only:
+python3 main.py cli --uma8-only --low 900 --high 1100
 ```
 
 ### 3. Verify Hardware & Calibration
