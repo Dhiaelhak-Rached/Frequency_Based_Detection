@@ -108,13 +108,14 @@ class RigGeometry:
             u_long = np.array([np.sin(rot_rad), np.cos(rot_rad)])
             u_short = np.array([np.cos(rot_rad), -np.sin(rot_rad)])
 
+            # 4x4 uniform square planar array (16 mics on 42 mm grid)
             mics_local = {}
             mics_global = {}
             for ch in range(16):
-                col = ch % 8
-                row = ch // 8
-                lx = (col - 3.5) * grid_m   # along long axis (0 deg local)
-                ly = (row - 0.5) * grid_m   # across short axis (90 deg local)
+                col = ch % 4
+                row = ch // 4
+                lx = (1.5 - row) * grid_m   # along board axis (front to back)
+                ly = (col - 1.5) * grid_m   # across board axis (left to right)
                 mics_local[ch] = np.array([lx, ly])
                 mics_global[ch] = c + lx * u_long + ly * u_short
 

@@ -6,7 +6,9 @@
     "apex_to_left_tip_m": 0.14,
     "apex_to_right_tip_m": 0.17,
     "rear_baseline_m": 0.185,
-    "uma16_length_m": 0.294
+    "uma16_grid": [4, 4],
+    "uma16_width_m": 0.126,
+    "uma16_length_m": 0.126
   },
   "default_detection": {
     "target_low_hz": 900.0,

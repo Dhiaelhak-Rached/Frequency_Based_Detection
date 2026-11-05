@@ -402,8 +402,8 @@ class TacticalGUI:
                 c.create_oval(cx - 7, cy - 7, cx + 7, cy + 7, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 12, text="UMA-8", fill=col, font=("Helvetica", 7, "bold"))
             else:
-                c.create_rectangle(cx - 6, cy - 14, cx + 6, cy + 14, fill=col, outline="#ffffff")
-                c.create_text(cx, cy + 18, text=arr.name, fill=col, font=("Helvetica", 7))
+                c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
+                c.create_text(cx, cy + 16, text=f"{arr.name} (4x4)", fill=col, font=("Helvetica", 7))
 
         # Draw Bearing Rays
         ray_colors = {"front": RAY_FRONT, "left": RAY_LEFT, "right": RAY_RIGHT}
