@@ -125,54 +125,79 @@ class TacticalGUI:
         ctrl = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         ctrl.pack(fill="x", padx=10, pady=(6, 10))
 
+        # Top row of controls: Audio Device Mapping
+        dev_row = tk.Frame(ctrl, bg=PANEL)
+        dev_row.pack(fill="x", padx=8, pady=(6, 2))
+
+        tk.Label(dev_row, text="Mic Device IDs:", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(0, 8))
+
+        tk.Label(dev_row, text="Front (UMA-8):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
+        default_front = str(self.geo.cfg.get("arrays", {}).get("front", {}).get("device_index", 4))
+        self.var_dev_front = tk.StringVar(value=default_front)
+        tk.Entry(dev_row, textvariable=self.var_dev_front, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+
+        tk.Label(dev_row, text="Left (UMA-16):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        default_left = str(self.geo.cfg.get("arrays", {}).get("left", {}).get("device_index", 1))
+        self.var_dev_left = tk.StringVar(value=default_left)
+        tk.Entry(dev_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+
+        tk.Label(dev_row, text="Right (UMA-16):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        default_right = str(self.geo.cfg.get("arrays", {}).get("right", {}).get("device_index", 2))
+        self.var_dev_right = tk.StringVar(value=default_right)
+        tk.Entry(dev_row, textvariable=self.var_dev_right, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+
+        # Bottom row of controls: Filter settings & Action buttons
+        act_row = tk.Frame(ctrl, bg=PANEL)
+        act_row.pack(fill="x", padx=8, pady=(4, 6))
+
         self.btn_toggle = tk.Button(
-            ctrl, text="START LISTENING", font=("Helvetica", 11, "bold"),
+            act_row, text="START LISTENING", font=("Helvetica", 11, "bold"),
             bg="#238636", fg="#ffffff", activebackground="#2ea043",
-            padx=14, pady=6, command=self.on_toggle_listening, relief="flat",
+            padx=14, pady=4, command=self.on_toggle_listening, relief="flat",
         )
-        self.btn_toggle.pack(side="left", padx=8, pady=8)
+        self.btn_toggle.pack(side="left", padx=(0, 10))
 
         # Band Low
-        tk.Label(ctrl, text="Band Low (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Band Low (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
         self.var_low = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_low_hz"]))
-        tk.Entry(ctrl, textvariable=self.var_low, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        tk.Entry(act_row, textvariable=self.var_low, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Band High
-        tk.Label(ctrl, text="Band High (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Band High (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
         self.var_high = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_high_hz"]))
-        tk.Entry(ctrl, textvariable=self.var_high, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        tk.Entry(act_row, textvariable=self.var_high, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Threshold
-        tk.Label(ctrl, text="Threshold (dBFS):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Threshold (dBFS):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
         self.var_thresh = tk.StringVar(value=str(self.geo.cfg["default_detection"]["threshold_dbfs"]))
-        tk.Entry(ctrl, textvariable=self.var_thresh, width=5, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        tk.Entry(act_row, textvariable=self.var_thresh, width=5, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Averaging
-        tk.Label(ctrl, text="Averaging:", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Averaging:", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
         self.var_avg = tk.StringVar(value=str(self.geo.cfg["default_detection"]["average_blocks"]))
-        tk.Entry(ctrl, textvariable=self.var_avg, width=3, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        tk.Entry(act_row, textvariable=self.var_avg, width=3, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Simulation Toggle
         self.var_sim = tk.BooleanVar(value=self.simulate)
         chk_sim = tk.Checkbutton(
-            ctrl, text="Simulation Mode", variable=self.var_sim, bg=PANEL, fg=FG,
+            act_row, text="Simulation Mode", variable=self.var_sim, bg=PANEL, fg=FG,
             selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
             command=self.on_toggle_sim,
         )
-        chk_sim.pack(side="left", padx=(16, 8))
+        chk_sim.pack(side="left", padx=(14, 8))
 
         # Clear Trail Button
         btn_clear = tk.Button(
-            ctrl, text="Clear Trail", bg="#30363d", fg=FG, padx=8, pady=4,
+            act_row, text="Clear Trail", bg="#30363d", fg=FG, padx=8, pady=3,
             command=self.clear_trail, relief="flat",
         )
-        btn_clear.pack(side="right", padx=8)
+        btn_clear.pack(side="right", padx=4)
 
         # Scale slider
-        tk.Label(ctrl, text="Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
+        tk.Label(act_row, text="Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
         self.slider_zoom = tk.Scale(
-            ctrl, from_=30, to=200, orient="horizontal", showvalue=0, bg=PANEL,
-            troughcolor="#0d1117", highlightthickness=0, length=90, command=self.on_zoom_change
+            act_row, from_=30, to=200, orient="horizontal", showvalue=0, bg=PANEL,
+            troughcolor="#0d1117", highlightthickness=0, length=80, command=self.on_zoom_change
         )
         self.slider_zoom.set(int(self.map_scale))
         self.slider_zoom.pack(side="right", padx=4)
@@ -210,7 +235,12 @@ class TacticalGUI:
                 return
 
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
-            self.audio_mgr.start()
+            dev_map = {
+                "front": self.var_dev_front.get().strip(),
+                "left": self.var_dev_left.get().strip(),
+                "right": self.var_dev_right.get().strip(),
+            }
+            self.audio_mgr.start(device_map=dev_map)
             self.is_active = True
             self.btn_toggle.configure(text="STOP", bg=WARN, activebackground="#da3633")
             self.status_lbl.configure(text="SEARCHING...", fg=ACCENT)

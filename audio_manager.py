@@ -2,18 +2,42 @@
 """Multi-device USB audio stream manager and real-time acoustic field simulator.
 
 Coordinates concurrent audio capture across multiple USB audio devices (UMA-8 and
-UMA-16 arrays) and includes a high-fidelity synthetic wavefield simulator for
+UMA-16 / MCHStreamer arrays) and includes a high-fidelity synthetic wavefield simulator for
 testing and verification without physical hardware.
 """
 
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import sounddevice as sd
 
 from geometry import RigGeometry, SOUND_SPEED
+
+
+def resolve_audio_device(spec: Optional[Union[int, str]], min_channels: int = 1) -> Optional[int]:
+    """Resolve an integer index or name substring to a valid sounddevice input index."""
+    if spec is None:
+        return None
+    # 1. Direct integer index
+    try:
+        idx = int(spec)
+        info = sd.query_devices(idx)
+        if info["max_input_channels"] > 0:
+            return idx
+    except (ValueError, TypeError):
+        pass
+    except Exception:
+        pass
+
+    # 2. Match by name substring
+    query = str(spec).strip().lower()
+    for i, d in enumerate(sd.query_devices()):
+        if d["max_input_channels"] >= min_channels:
+            if query in d["name"].lower():
+                return i
+    return None
 
 
 class MultiDeviceAudioManager:
@@ -34,6 +58,7 @@ class MultiDeviceAudioManager:
 
         self.streams: Dict[str, sd.InputStream] = {}
         self.buffers: Dict[str, np.ndarray] = {}
+        self.active_devices: Dict[str, Tuple[int, str]] = {}
         self.lock = threading.Lock()
         self.is_running = False
 
@@ -75,10 +100,10 @@ class MultiDeviceAudioManager:
                 })
         return devices
 
-    def start(self, device_map: Optional[Dict[str, int]] = None):
+    def start(self, device_map: Optional[Dict[str, Union[int, str]]] = None):
         """Start audio capture streams or simulation loop.
 
-        device_map: {"front": dev_idx, "left": dev_idx, "right": dev_idx}
+        device_map: {"front": dev_idx_or_name, "left": dev_idx_or_name, "right": dev_idx_or_name}
         """
         if self.is_running:
             return
@@ -89,27 +114,37 @@ class MultiDeviceAudioManager:
 
         # Hardware capture mode
         for arr_id, arr in self.geo.arrays.items():
+            req_channels = 16 if arr.array_type == "uma16" else 7
             dev_idx = None
-            if device_map and arr_id in device_map:
-                dev_idx = device_map[arr_id]
-            else:
-                # Automatic hint discovery
-                hint = arr_id.lower()
-                for d in sd.query_devices():
-                    if d["max_input_channels"] >= len(arr.mic_positions):
-                        name = d["name"].lower()
-                        if (arr.array_type == "uma8" and ("uma" in name or "micarray" in name)) or \
-                           (arr.array_type == "uma16" and ("uma-16" in name or "uma16" in name)):
-                            dev_idx = d["index"]
-                            break
 
+            # 1. Check explicit caller map
+            if device_map and arr_id in device_map:
+                dev_idx = resolve_audio_device(device_map[arr_id], min_channels=req_channels)
+
+            # 2. Check rig_config.json
             if dev_idx is None:
-                # Fallback to default system input if specific device isn't matched
+                cfg_idx = self.geo.cfg.get("arrays", {}).get(arr_id, {}).get("device_index")
+                if cfg_idx is not None:
+                    dev_idx = resolve_audio_device(cfg_idx, min_channels=req_channels)
+
+            # 3. Automatic name discovery (MCHStreamer / UMA16 / micArray)
+            if dev_idx is None:
+                hints = ["micarray", "uma8", "uma-8"] if arr.array_type == "uma8" else ["mchstreamer", "uma16", "uma-16"]
+                for h in hints:
+                    dev_idx = resolve_audio_device(h, min_channels=req_channels)
+                    if dev_idx is not None:
+                        break
+
+            # 4. Fallback to default system input if specific device isn't matched
+            if dev_idx is None:
                 default_dev = sd.default.device[0]
-                dev_idx = default_dev if default_dev is not None else 0
+                dev_idx = default_dev if default_dev is not None and default_dev >= 0 else 0
 
             info = sd.query_devices(dev_idx)
             n_ch = min(info["max_input_channels"], 16 if arr.array_type == "uma16" else 8)
+            dev_name = info["name"]
+            self.active_devices[arr_id] = (dev_idx, dev_name)
+            print(f"[AUDIO] Array '{arr.name}' bound to device [{dev_idx}] {dev_name!r} ({n_ch} channels @ {self.sample_rate} Hz)")
 
             def make_callback(side_id):
                 def callback(indata, frames, time_info, status):
@@ -117,16 +152,19 @@ class MultiDeviceAudioManager:
                         self.buffers[side_id] = indata.copy()
                 return callback
 
-            stream = sd.InputStream(
-                device=dev_idx,
-                channels=n_ch,
-                samplerate=self.sample_rate,
-                blocksize=self.blocksize,
-                dtype="float32",
-                callback=make_callback(arr_id),
-            )
-            stream.start()
-            self.streams[arr_id] = stream
+            try:
+                stream = sd.InputStream(
+                    device=dev_idx,
+                    channels=n_ch,
+                    samplerate=self.sample_rate,
+                    blocksize=self.blocksize,
+                    dtype="float32",
+                    callback=make_callback(arr_id),
+                )
+                stream.start()
+                self.streams[arr_id] = stream
+            except Exception as e:
+                print(f"[ERROR] Failed to start audio stream on device [{dev_idx}] for array '{arr_id}': {e}")
 
     def stop(self):
         self.is_running = False
@@ -137,6 +175,7 @@ class MultiDeviceAudioManager:
             except Exception:
                 pass
         self.streams.clear()
+        self.active_devices.clear()
 
     def get_latest_blocks(self) -> Dict[str, np.ndarray]:
         """Fetch synchronized audio blocks for all arrays."""

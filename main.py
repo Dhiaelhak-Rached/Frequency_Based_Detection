@@ -41,6 +41,9 @@ def parse_args():
     pg.add_argument("--low", type=float, default=None, help="lower target band limit (Hz)")
     pg.add_argument("--high", type=float, default=None, help="upper target band limit (Hz)")
     pg.add_argument("--threshold", type=float, default=None, help="detection threshold in dBFS")
+    pg.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
+    pg.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
+    pg.add_argument("--dev-right", default=None, help="device index or name for Right UMA-16")
 
     # 2. CLI
     pc = sub.add_parser("cli", help="run headless terminal tracking")
@@ -49,6 +52,9 @@ def parse_args():
     pc.add_argument("--high", type=float, default=1100.0, help="upper target band limit (Hz)")
     pc.add_argument("--threshold", type=float, default=-65.0, help="detection threshold (dBFS)")
     pc.add_argument("--average", type=int, default=4, help="number of averaged blocks")
+    pc.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
+    pc.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
+    pc.add_argument("--dev-right", default=None, help="device index or name for Right UMA-16")
 
     # 3. Simulate
     ps = sub.add_parser("simulate", help="run offline math verification benchmark")
@@ -77,6 +83,12 @@ def cmd_gui(args):
         app.var_high.set(str(args.high))
     if args.threshold is not None:
         app.var_thresh.set(str(args.threshold))
+    if args.dev_front is not None:
+        app.var_dev_front.set(str(args.dev_front))
+    if args.dev_left is not None:
+        app.var_dev_left.set(str(args.dev_left))
+    if args.dev_right is not None:
+        app.var_dev_right.set(str(args.dev_right))
     root.mainloop()
 
 
@@ -111,7 +123,15 @@ def cmd_cli(args):
     print(" Press Ctrl+C to stop.")
     print("===================================================================\n")
 
-    audio_mgr.start()
+    dev_map = {}
+    if args.dev_front is not None:
+        dev_map["front"] = args.dev_front
+    if args.dev_left is not None:
+        dev_map["left"] = args.dev_left
+    if args.dev_right is not None:
+        dev_map["right"] = args.dev_right
+
+    audio_mgr.start(device_map=dev_map if dev_map else None)
     try:
         while True:
             blocks = audio_mgr.get_latest_blocks()
