@@ -29,9 +29,17 @@ class TriangulationResult:
 class Triangulator:
     """Overdetermined weighted least-squares 2D ray intersection engine."""
 
-    def __init__(self, geometry: RigGeometry, min_prominence: float = 1.4):
+    def __init__(
+        self,
+        geometry: RigGeometry,
+        min_prominence: float = 1.4,
+        max_residual_m: float = 0.25,
+        max_relative_residual: float = 0.1,
+    ):
         self.geo = geometry
         self.min_prominence = min_prominence
+        self.max_residual_m = max_residual_m
+        self.max_relative_residual = max_relative_residual
 
     def triangulate(
         self,
@@ -119,8 +127,7 @@ class Triangulator:
                 if np.dot(u, vec_to_point) > 0:
                     forward_votes += 1
 
-            if forward_votes < (n_rays // 2 + 1):
-                # Target is behind the sensing aperture
+            if forward_votes != n_rays:
                 return TriangulationResult(
                     success=False,
                     x=None,
@@ -132,13 +139,23 @@ class Triangulator:
                     rays=ray_dict,
                 )
 
-            # Residual distance error
             residuals = np.abs(A @ sol - b)
             avg_residual = float(np.average(residuals, weights=weights))
-
             range_m = float(np.sqrt(x_est ** 2 + y_est ** 2))
-            bearing_deg = vector_to_bearing(sol)
+            residual_limit = max(self.max_residual_m, self.max_relative_residual * range_m)
+            if not np.isfinite(range_m) or range_m <= 0.0 or avg_residual > residual_limit:
+                return TriangulationResult(
+                    success=False,
+                    x=None,
+                    y=None,
+                    range_m=None,
+                    bearing_deg=None,
+                    residual_error_m=avg_residual,
+                    active_rays=n_rays,
+                    rays=ray_dict,
+                )
 
+            bearing_deg = vector_to_bearing(sol)
             return TriangulationResult(
                 success=True,
                 x=x_est,

@@ -225,7 +225,10 @@ def cmd_simulate(args):
     print(f"True Target:  X = {args.target_x:+5.2f} m, Y = {args.target_y:+5.2f} m | Range: {true_range:4.2f} m | Bearing: {true_bearing:5.1f}°")
     for arr_id in geo.arrays:
         if bearings_log[arr_id]:
-            print(f"  {geo.arrays[arr_id].name:<15}: Estimated Bearing = {np.mean(bearings_log[arr_id]):5.1f}°")
+            angles_rad = np.deg2rad(bearings_log[arr_id])
+            mean_vector = np.mean(np.exp(1j * angles_rad))
+            mean_bearing = float(np.rad2deg(np.angle(mean_vector)) % 360.0)
+            print(f"  {geo.arrays[arr_id].name:<15}: Estimated Bearing = {mean_bearing:5.1f}°")
 
     if errors:
         med_err = np.median(errors)
@@ -249,21 +252,38 @@ def cmd_test_geometry(args):
     print("===================================================================\n")
 
     for arr_id, arr in geo.arrays.items():
+        cfg = geo.cfg["arrays"][arr_id]
         print(f"Array: {arr.name} (Type: {arr.array_type})")
-        print(f"  Center:       X = {arr.center[0]:+6.3f} m, Y = {arr.center[1]:+6.3f} m")
-        print(f"  Orientation:  {arr.orientation_deg:+5.1f}° relative to forward (+Y)")
-        print(f"  Active Mics:  {len(arr.mic_positions)} microphones")
+        print(f"  Acoustic Center: X = {arr.center[0]:+6.3f} m, Y = {arr.center[1]:+6.3f} m")
+        if "xmos_center" in cfg:
+            ref = cfg["xmos_center"]
+            print(f"  XMOS Reference:  X = {ref[0]:+6.3f} m, Y = {ref[1]:+6.3f} m")
+        print(f"  Orientation:     {arr.orientation_deg:+5.1f}° relative to forward (+Y)")
+        print(f"  Active Mics:     {len(arr.mic_positions)} microphones {sorted(arr.mic_positions)}")
         xs = [pos[0] for pos in arr.mic_positions.values()]
         ys = [pos[1] for pos in arr.mic_positions.values()]
-        print(f"  Aperture X:   [{min(xs):+6.3f} m, {max(xs):+6.3f} m]")
-        print(f"  Aperture Y:   [{min(ys):+6.3f} m, {max(ys):+6.3f} m]\n")
+        print(f"  Aperture X:      [{min(xs):+6.3f} m, {max(xs):+6.3f} m]")
+        print(f"  Aperture Y:      [{min(ys):+6.3f} m, {max(ys):+6.3f} m]\n")
 
     meas = geo.cfg.get("physical_measurements", {})
-    print("Physical Rig Checks:")
-    print(f"  Apex to Left Tip:   {meas.get('apex_to_left_tip_m', 0)*100:.1f} cm (matches sketch 14 cm)")
-    print(f"  Apex to Right Tip:  {meas.get('apex_to_right_tip_m', 0)*100:.1f} cm (matches sketch 17 cm)")
-    print(f"  Rear Baseline:      {meas.get('rear_baseline_m', 0)*100:.1f} cm (matches sketch 18.5 cm)")
-    print(f"  Total Channels:     {sum(len(a.mic_positions) for a in geo.arrays.values())} active microphones")
+    refs = {
+        arr_id: np.array(cfg["xmos_center"] if "xmos_center" in cfg else cfg["center"], dtype=float)
+        for arr_id, cfg in geo.cfg["arrays"].items()
+    }
+    checks = (
+        ("Apex to Left", "front", "left", "apex_to_left_m"),
+        ("Apex to Right", "front", "right", "apex_to_right_m"),
+        ("Rear Baseline", "left", "right", "rear_baseline_m"),
+    )
+    print("Physical Rig Checks (XMOS board to XMOS board):")
+    for label, first, second, key in checks:
+        actual = np.linalg.norm(refs[second] - refs[first])
+        expected = float(meas[key])
+        if not np.isclose(actual, expected, atol=1e-6):
+            print(f"  {label}: MISMATCH, configured {actual*100:.1f} cm vs measured {expected*100:.1f} cm")
+            return
+        print(f"  {label}: {actual*100:.1f} cm")
+    print(f"  Total Channels: {sum(len(a.mic_positions) for a in geo.arrays.values())} active microphones")
     print("\n[SUCCESS] Geometry model verified successfully.")
 
 

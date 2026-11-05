@@ -190,7 +190,7 @@ class MultiDeviceAudioManager:
             return out
 
     def _generate_simulated_blocks(self) -> Dict[str, np.ndarray]:
-        """Synthesize wave propagation from virtual moving target to all 39 mics."""
+        """Synthesize wave propagation from the virtual target to all active microphones."""
         now = time.time()
         elapsed = now - self.sim_t0
 

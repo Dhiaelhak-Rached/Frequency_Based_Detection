@@ -23,6 +23,7 @@ class DOAResult:
     prominence: float
     confidence: float
     spectrum: Optional[np.ndarray]
+    error: Optional[str] = None
 
 
 class CircularTracker:
@@ -96,6 +97,12 @@ class ArrayDOA:
         self.freq_hi = freq_hi
 
         self.channels = sorted(self.mic_positions.keys())
+        positions = np.stack([self.mic_positions[ch] for ch in self.channels])
+        distances = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
+        np.fill_diagonal(distances, np.inf)
+        nearest_spacings = distances.min(axis=1)
+        self.nominal_spacing_m = float(np.median(nearest_spacings[np.isfinite(nearest_spacings)]))
+        self.max_direction_freq_hz = SOUND_SPEED / (2.0 * self.nominal_spacing_m)
         self.angles = np.arange(0, 360, grid_deg)
         self.n_angles = len(self.angles)
 
@@ -144,6 +151,13 @@ class ArrayDOA:
         band: Optional[Tuple[float, float]] = None,
     ) -> DOAResult:
         """Estimate DOA. Fully controlled by GUI band [low, high] or specific target_freq."""
+        if target_freq is not None and target_freq > self.max_direction_freq_hz:
+            self.tracker.reset()
+            return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
+        if target_freq is None and band is not None and band[0] > self.max_direction_freq_hz:
+            self.tracker.reset()
+            return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
+
         # Dynamically adapt frequency band from GUI band or detected target_freq
         if band is not None:
             low_hz, high_hz = float(band[0]), float(band[1])
@@ -168,7 +182,7 @@ class ArrayDOA:
 
         # Extract only relevant channels (N, M)
         x = np.stack([block[:, ch] for ch in self.channels], axis=1)
-        X = np.fft.rfft(x, axis=0)  # (N_freq, M)
+        X = np.fft.rfft(x * np.hanning(n)[:, None], axis=0)  # (N_freq, M)
         freqs = np.fft.rfftfreq(n, 1.0 / self.sample_rate)
 
         band_idx = self._band_idx
@@ -180,13 +194,13 @@ class ArrayDOA:
         energy = np.mean(np.abs(Xb) ** 2, axis=1)
 
         # Frequency-gating: isolate target tone bins
-        keep = np.ones(len(fb), dtype=bool)
+        keep = fb <= self.max_direction_freq_hz
         if target_freq is not None:
             f_lo = target_freq - target_bandwidth_hz / 2.0
             f_hi = target_freq + target_bandwidth_hz / 2.0
-            keep = (fb >= f_lo) & (fb <= f_hi)
+            keep &= (fb >= f_lo) & (fb <= f_hi)
         elif band is not None:
-            keep = (fb >= band[0]) & (fb <= band[1])
+            keep &= (fb >= band[0]) & (fb <= band[1])
 
         if not np.any(keep):
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None)
@@ -218,8 +232,8 @@ class ArrayDOA:
         y2 = p[(peak_idx + 1) % self.n_angles]
         denom = y0 - 2 * y1 + y2
         frac = 0.0
-        if denom > 0:
-            frac = 0.5 * (y0 - y2) / denom
+        if denom < 0:
+            frac = float(np.clip(0.5 * (y0 - y2) / denom, -0.5, 0.5))
 
         local_angle = (peak_idx + frac) * self.grid_deg % 360.0
         prominence = float((p.max() - np.median(p)) / (np.std(p) + 1e-12))

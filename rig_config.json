@@ -3,9 +3,10 @@
   "sound_speed": 343.0,
   "sample_rate": 44100,
   "physical_measurements": {
-    "apex_to_left_tip_m": 0.14,
-    "apex_to_right_tip_m": 0.17,
-    "rear_baseline_m": 0.185,
+    "reference": "XMOS board to XMOS board",
+    "apex_to_left_m": 0.365,
+    "apex_to_right_m": 0.36,
+    "rear_baseline_m": 0.585,
     "uma16_grid": [
       4,
       4
@@ -14,8 +15,8 @@
     "uma16_length_m": 0.126
   },
   "default_detection": {
-    "target_low_hz": 4800.0,
-    "target_high_hz": 4850.0,
+    "target_low_hz": 900.0,
+    "target_high_hz": 1100.0,
     "threshold_dbfs": -65.0,
     "block_duration": 0.2,
     "average_blocks": 4
@@ -29,7 +30,7 @@
         0.0
       ],
       "orientation_deg": 0.0,
-      "radius_m": 0.0855,
+      "radius_m": 0.04275,
       "channels": 8,
       "active_channels": [
         0,
@@ -46,11 +47,15 @@
     "left": {
       "name": "UMA-16 Left",
       "type": "uma16",
-      "center": [
-        -0.075,
-        -0.26
+      "xmos_center": [
+        -0.295598291,
+        -0.21411831
       ],
-      "orientation_deg": -20.0,
+      "mic_center_offset_local_m": [
+        0.0,
+        0.0
+      ],
+      "orientation_deg": -90.0,
       "grid_m": 0.042,
       "channels": 16,
       "active_channels": [
@@ -76,31 +81,27 @@
       "cable": "black USB"
     },
     "right": {
-      "name": "UMA-16 Right",
+      "name": "UMA-16 Right (Cut)",
       "type": "uma16",
-      "center": [
-        0.085,
-        -0.285
+      "xmos_center": [
+        0.289401709,
+        -0.21411831
       ],
-      "orientation_deg": 22.0,
+      "mic_center_offset_local_m": [
+        0.0,
+        0.0
+      ],
+      "orientation_deg": 90.0,
       "grid_m": 0.042,
       "channels": 16,
       "active_channels": [
         0,
-        1,
         2,
-        3,
         4,
-        5,
         6,
-        7,
-        8,
         9,
-        10,
         11,
-        12,
         13,
-        14,
         15
       ],
       "device_index": 2,

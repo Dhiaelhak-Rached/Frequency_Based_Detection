@@ -2,15 +2,15 @@
 """2D Tactical Radar GUI for frequency-locked 3-array acoustic triangulation.
 
 Displays real-time FFT spectrum, live drone telemetry, and a top-down 2D
-tactical map plotting the physical rig, bearing rays, and triangulated (X, Y)
-target position.
+tactical map plotting the physical rig and one validated bearing to the
+triangulated (X, Y) target position.
 """
 
 import json
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
 
 import numpy as np
 
@@ -73,7 +73,6 @@ class TacticalGUI:
         )
 
         self.is_active = False
-        self.trail: List[Tuple[float, float]] = []  # Target position history
         self.map_scale = 90.0  # pixels per meter
         self.map_center_offset_y = 220  # offset origin downwards on canvas
 
@@ -198,13 +197,6 @@ class TacticalGUI:
         )
         chk_sim.pack(side="left", padx=(14, 8))
 
-        # Clear Trail Button
-        btn_clear = tk.Button(
-            act_row, text="Clear Trail", bg="#30363d", fg=FG, padx=8, pady=3,
-            command=self.clear_trail, relief="flat",
-        )
-        btn_clear.pack(side="right", padx=4)
-
         # Scale slider
         tk.Label(act_row, text="Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
         self.slider_zoom = tk.Scale(
@@ -224,9 +216,6 @@ class TacticalGUI:
 
     def on_zoom_change(self, val):
         self.map_scale = float(val)
-
-    def clear_trail(self):
-        self.trail.clear()
 
     def on_toggle_sim(self):
         self.simulate = self.var_sim.get()
@@ -316,6 +305,7 @@ class TacticalGUI:
         # 2. Narrowband DOA for each array
         bearings = {}
         prominences = {}
+        doa_errors = {}
         for arr_id, doa_eng in self.doa_engines.items():
             if arr_id in blocks:
                 # Steer ONLY on detected target frequency bin if detected, else user band
@@ -323,16 +313,22 @@ class TacticalGUI:
                 res = doa_eng.estimate(blocks[arr_id], target_freq=target_f, band=(low, high))
                 bearings[arr_id] = res.global_angle_deg
                 prominences[arr_id] = res.prominence
+                doa_errors[arr_id] = res.error
 
         # 3. Spatial Triangulation
         tri_res = self.triangulator.triangulate(bearings, prominences)
 
         # 4. Update Telemetry & UI
-        self._update_telemetry(det_res, tri_res)
+        self._update_telemetry(det_res, tri_res, doa_errors)
         self._draw_spectrum(det_res)
-        self._draw_tactical_map(tri_res, bearings=bearings)
+        self._draw_tactical_map(tri_res)
 
-    def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator):
+    def _clear_target_telemetry(self):
+        self.lbl_range.configure(text="-.-- m", fg=MUTED)
+        self.lbl_bearing.configure(text="---.-°", fg=MUTED)
+        self.lbl_coords.configure(text="X: -.--  Y: -.--", fg=MUTED)
+
+    def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator, doa_errors=None):
         if det.peak_freq is not None:
             self.lbl_freq.configure(text=f"{det.peak_freq:6.1f} Hz", fg=WARN if det.detected else FG)
         else:
@@ -347,13 +343,17 @@ class TacticalGUI:
                 self.lbl_range.configure(text=f"{tri.range_m:4.2f} m", fg=OK)
                 self.lbl_bearing.configure(text=f"{tri.bearing_deg:5.1f}°", fg=OK)
                 self.lbl_coords.configure(text=f"X:{tri.x:+4.2f}m  Y:{tri.y:+4.2f}m", fg=OK)
-                self.trail.append((tri.x, tri.y))
-                if len(self.trail) > 40:
-                    self.trail.pop(0)
             else:
-                self.status_lbl.configure(text="FREQ DETECTED (WAITING TRIANGULATION)", fg=WARN, bg="#2b2010")
+                if doa_errors and all(err == "spatial_aliasing" for err in doa_errors.values()):
+                    max_safe_freq = min(eng.max_direction_freq_hz for eng in self.doa_engines.values())
+                    status = f"FREQ OK / DOA BLOCKED ABOVE {max_safe_freq:.0f} Hz"
+                else:
+                    status = "FREQ DETECTED (WAITING VALID TRIANGULATION)"
+                self.status_lbl.configure(text=status, fg=WARN, bg="#2b2010")
+                self._clear_target_telemetry()
         else:
             self.status_lbl.configure(text="SCANNING", fg=ACCENT, bg="#1a2733")
+            self._clear_target_telemetry()
 
     def _draw_spectrum(self, det):
         c = self.canvas_spec
@@ -410,7 +410,7 @@ class TacticalGUI:
             c.create_line(tx, h - 5, tx, h, fill=MUTED)
             c.create_text(tx, h - 12, text=f"{f_tick/1000:g}k", fill=MUTED, font=("Monospace", 7))
 
-    def _draw_tactical_map(self, tri, bearings=None):
+    def _draw_tactical_map(self, tri):
         c = self.canvas_radar
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
@@ -446,40 +446,13 @@ class TacticalGUI:
                 c.create_text(cx, cy + 12, text="UMA-8", fill=col, font=("Helvetica", 7, "bold"))
             else:
                 c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
-                c.create_text(cx, cy + 16, text=f"{arr.name} (4x4)", fill=col, font=("Helvetica", 7))
+                c.create_text(cx, cy + 16, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))
 
-        # Draw Bearing Rays
-        ray_colors = {"front": RAY_FRONT, "left": RAY_LEFT, "right": RAY_RIGHT}
-        display_rays = tri.rays.copy() if tri.rays else {}
-        if bearings:
-            for arr_id, ang in bearings.items():
-                if ang is not None and arr_id not in display_rays and arr_id in self.geo.arrays:
-                    display_rays[arr_id] = (self.geo.arrays[arr_id].center.copy(), ang)
-
-        for arr_id, (orig, angle_deg) in display_rays.items():
-            if angle_deg is not None:
-                rad = np.deg2rad(angle_deg)
-                dx, dy = np.sin(rad), np.cos(rad)
-                p0 = to_canvas(orig[0], orig[1])
-                ray_length_m = 6.0
-                p1 = to_canvas(orig[0] + dx * ray_length_m, orig[1] + dy * ray_length_m)
-                c.create_line(p0[0], p0[1], p1[0], p1[1], fill=ray_colors.get(arr_id, ACCENT),
-                              width=2, dash=(6, 2))
-
-        # Draw Historical Trail
-        if len(self.trail) >= 2:
-            pts = []
-            for tx, ty in self.trail:
-                pts.extend(to_canvas(tx, ty))
-            c.create_line(pts, fill="#484f58", width=1.5, dash=(2, 2))
-
-        # Draw Triangulated Target
+        # Draw one validated result from the rig origin to the target
         if tri.success and tri.x is not None and tri.y is not None:
             tx, ty = to_canvas(tri.x, tri.y)
-            # Uncertainty circle
-            unc_px = max(10, tri.residual_error_m * self.map_scale)
-            c.create_oval(tx - unc_px, ty - unc_px, tx + unc_px, ty + unc_px, outline=WARN, dash=(2, 2))
-            # Center target marker
+            origin = to_canvas(0.0, 0.0)
+            c.create_line(origin[0], origin[1], tx, ty, fill=WARN, width=3)
             c.create_oval(tx - 6, ty - 6, tx + 6, ty + 6, fill=WARN, outline="#ffffff", width=2)
             c.create_text(tx + 12, ty - 8, text=f"TARGET ({tri.x:+.1f}m, {tri.y:+.1f}m)",
                           fill=WARN, anchor="w", font=("Helvetica", 9, "bold"))

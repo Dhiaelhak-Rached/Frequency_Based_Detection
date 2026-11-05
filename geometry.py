@@ -92,38 +92,47 @@ class RigGeometry:
             mic_positions=mics_global_front,
         )
 
-        # 2. Left & Right UMA-16 arrays
+        # 2. Left & Right UMA-16 arrays. Channel N corresponds to PCB MIC N+1.
+        # Rows run from the far end (0) to the USB end (3); columns run left to right.
+        uma16_mic_layout = {
+            0: (3, 1), 1: (3, 0), 2: (2, 1), 3: (2, 0),
+            4: (1, 1), 5: (1, 0), 6: (0, 1), 7: (0, 0),
+            8: (0, 3), 9: (0, 2), 10: (1, 3), 11: (1, 2),
+            12: (2, 3), 13: (2, 2), 14: (3, 3), 15: (3, 2),
+        }
         for side in ("left", "right"):
             if side not in arr_cfgs:
                 continue
             cfg = arr_cfgs[side]
-            c = np.array(cfg.get("center", [-0.075, -0.26] if side == "left" else [0.085, -0.285]), dtype=float)
-            rot_deg = float(cfg.get("orientation_deg", -20.0 if side == "left" else 22.0))
+            default_xmos = [-0.295598291, -0.214118310] if side == "left" else [0.289401709, -0.214118310]
+            xmos_center = np.array(cfg.get("xmos_center", cfg.get("center", default_xmos)), dtype=float)
+            rot_deg = float(cfg.get("orientation_deg", -90.0 if side == "left" else 90.0))
             grid_m = float(cfg.get("grid_m", 0.042))
+            center_offset = np.array(cfg.get("mic_center_offset_local_m", [0.0, 0.0]), dtype=float)
+            active_channels = set(cfg.get("active_channels", range(16)))
             rot_rad = np.deg2rad(rot_deg)
 
             # Axis vectors in global frame:
-            # u_long points along the board from USB tail to apex
+            # u_long points from the USB/XMOS end toward the far end of the mic board
             # u_short points across the board to its right
             u_long = np.array([np.sin(rot_rad), np.cos(rot_rad)])
             u_short = np.array([np.cos(rot_rad), -np.sin(rot_rad)])
+            acoustic_center = xmos_center + center_offset[0] * u_long + center_offset[1] * u_short
 
-            # 4x4 uniform square planar array (16 mics on 42 mm grid)
             mics_local = {}
             mics_global = {}
-            for ch in range(16):
-                col = ch % 4
-                row = ch // 4
-                lx = (1.5 - row) * grid_m   # along board axis (front to back)
-                ly = (col - 1.5) * grid_m   # across board axis (left to right)
-                mics_local[ch] = np.array([lx, ly])
-                mics_global[ch] = c + lx * u_long + ly * u_short
+            for ch, (row, col) in uma16_mic_layout.items():
+                if ch not in active_channels:
+                    continue
+                grid_local = np.array([(1.5 - row) * grid_m, (col - 1.5) * grid_m])
+                mics_local[ch] = grid_local - center_offset
+                mics_global[ch] = xmos_center + grid_local[0] * u_long + grid_local[1] * u_short
 
             self.arrays[side] = ArrayGeometry(
                 array_id=side,
                 name=cfg.get("name", f"UMA-16 {side.capitalize()}"),
                 array_type="uma16",
-                center=c,
+                center=acoustic_center,
                 orientation_deg=rot_deg,
                 local_mics=mics_local,
                 mic_positions=mics_global,
