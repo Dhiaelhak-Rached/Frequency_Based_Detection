@@ -29,7 +29,7 @@ class TriangulationResult:
 class Triangulator:
     """Overdetermined weighted least-squares 2D ray intersection engine."""
 
-    def __init__(self, geometry: RigGeometry, min_prominence: float = 1.8):
+    def __init__(self, geometry: RigGeometry, min_prominence: float = 1.4):
         self.geo = geometry
         self.min_prominence = min_prominence
 

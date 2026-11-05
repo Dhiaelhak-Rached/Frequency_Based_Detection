@@ -62,9 +62,9 @@ class TacticalGUI:
                 orientation_deg=arr.orientation_deg,
                 sample_rate=geometry.sample_rate,
                 freq_lo=200.0,
-                freq_hi=3500.0,
+                freq_hi=16000.0,
             )
-        self.triangulator = Triangulator(geometry=geometry, min_prominence=1.8)
+        self.triangulator = Triangulator(geometry=geometry, min_prominence=1.4)
         self.audio_mgr = MultiDeviceAudioManager(
             geometry=geometry,
             sample_rate=geometry.sample_rate,
@@ -288,7 +288,7 @@ class TacticalGUI:
         # 4. Update Telemetry & UI
         self._update_telemetry(det_res, tri_res)
         self._draw_spectrum(det_res)
-        self._draw_tactical_map(tri_res)
+        self._draw_tactical_map(tri_res, bearings=bearings)
 
     def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator):
         if det.peak_freq is not None:
@@ -320,8 +320,8 @@ class TacticalGUI:
         if w < 10:
             w, h = 380, 480
 
-        # Frequency scale: 0 to 4000 Hz
-        max_f = 4000.0
+        # Dynamic frequency scale based on user's target band
+        max_f = max(4000.0, float(det.band[1]) * 1.25)
         mags = det.mags
         freqs = det.freqs
         if mags is None or len(mags) == 0:
@@ -362,12 +362,13 @@ class TacticalGUI:
             c.create_text(px_peak + 4, 18, text=f"{det.peak_freq:.0f} Hz", fill=WARN, anchor="w", font=("Monospace", 9, "bold"))
 
         # Axis ticks
-        for f_tick in (500, 1000, 1500, 2000, 3000):
+        tick_interval = 1000.0 if max_f <= 7000.0 else 2000.0
+        for f_tick in np.arange(tick_interval, max_f, tick_interval):
             tx = (f_tick / max_f) * w
             c.create_line(tx, h - 5, tx, h, fill=MUTED)
             c.create_text(tx, h - 12, text=f"{f_tick/1000:g}k", fill=MUTED, font=("Monospace", 7))
 
-    def _draw_tactical_map(self, tri):
+    def _draw_tactical_map(self, tri, bearings=None):
         c = self.canvas_radar
         c.delete("all")
         w, h = c.winfo_width(), c.winfo_height()
@@ -407,7 +408,13 @@ class TacticalGUI:
 
         # Draw Bearing Rays
         ray_colors = {"front": RAY_FRONT, "left": RAY_LEFT, "right": RAY_RIGHT}
-        for arr_id, (orig, angle_deg) in tri.rays.items():
+        display_rays = tri.rays.copy() if tri.rays else {}
+        if bearings:
+            for arr_id, ang in bearings.items():
+                if ang is not None and arr_id not in display_rays and arr_id in self.geo.arrays:
+                    display_rays[arr_id] = (self.geo.arrays[arr_id].center.copy(), ang)
+
+        for arr_id, (orig, angle_deg) in display_rays.items():
             if angle_deg is not None:
                 rad = np.deg2rad(angle_deg)
                 dx, dy = np.sin(rad), np.cos(rad)

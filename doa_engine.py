@@ -84,7 +84,7 @@ class ArrayDOA:
         sample_rate: int = 44100,
         grid_deg: float = 1.0,
         freq_lo: float = 200.0,
-        freq_hi: float = 4000.0,
+        freq_hi: float = 16000.0,
         channel_delays: Optional[Dict[int, float]] = None,
     ):
         self.array_id = array_id
@@ -143,6 +143,15 @@ class ArrayDOA:
         target_bandwidth_hz: float = 60.0,
     ) -> DOAResult:
         """Estimate DOA. If target_freq is specified, steers ONLY on frequency bins around target_freq."""
+        # Dynamically expand frequency band if target frequency exceeds current boundaries
+        if target_freq is not None:
+            needed_hi = min(self.sample_rate / 2.0 - 50.0, target_freq + target_bandwidth_hz)
+            needed_lo = max(20.0, target_freq - target_bandwidth_hz)
+            if needed_hi > self.freq_hi or needed_lo < self.freq_lo:
+                self.freq_hi = max(self.freq_hi, needed_hi)
+                self.freq_lo = min(self.freq_lo, needed_lo)
+                self._last_n = None  # Rebuild steering grid
+
         n = block.shape[0]
         if n != self._last_n:
             self._build_steering(n)
@@ -164,8 +173,8 @@ class ArrayDOA:
         # Frequency-gating: isolate target tone bins
         keep = np.ones(len(fb), dtype=bool)
         if target_freq is not None:
-            f_lo = max(self.freq_lo, target_freq - target_bandwidth_hz / 2.0)
-            f_hi = min(self.freq_hi, target_freq + target_bandwidth_hz / 2.0)
+            f_lo = target_freq - target_bandwidth_hz / 2.0
+            f_hi = target_freq + target_bandwidth_hz / 2.0
             keep = (fb >= f_lo) & (fb <= f_hi)
 
         if not np.any(keep):
