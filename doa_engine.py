@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Narrowband SRP-PHAT Direction of Arrival (DOA) engine with frequency-gated steering.
+
+Steers phase transforms exclusively on target frequency bins, rejecting all
+out-of-band acoustic energy (speech, wind, ambient room noise). Includes circular
+temporal tracking with jump detection.
+"""
+
+from collections import deque
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+SOUND_SPEED = 343.0  # m/s
+
+
+@dataclass
+class DOAResult:
+    array_id: str
+    local_angle_deg: Optional[float]
+    global_angle_deg: Optional[float]
+    prominence: float
+    confidence: float
+    spectrum: Optional[np.ndarray]
+
+
+class CircularTracker:
+    """Wrap-around safe temporal smoothing using circular statistics."""
+
+    def __init__(self, window: int = 5, min_prominence: float = 2.0, decay: float = 0.75, jump_deg: float = 40.0):
+        self.window = window
+        self.min_prominence = min_prominence
+        self.decay = decay
+        self.jump_deg = jump_deg
+        self.estimates = deque(maxlen=window)
+
+    def _circular_diff(self, a_deg: float, b_deg: float) -> float:
+        return abs(((a_deg - b_deg + 180.0) % 360.0) - 180.0)
+
+    def add(self, angle_deg: Optional[float], prominence: float):
+        if angle_deg is None or prominence < self.min_prominence:
+            return
+        cur = self.angle
+        if cur is not None and self._circular_diff(angle_deg, cur) > self.jump_deg:
+            self.estimates.clear()  # Jump detected: flush stale history
+        self.estimates.append(np.deg2rad(angle_deg))
+
+    def _weighted_vector(self) -> complex:
+        th = np.array(self.estimates)
+        n = len(th)
+        weights = self.decay ** np.arange(n - 1, -1, -1)
+        z = (weights * np.exp(1j * th)).sum() / weights.sum()
+        return z
+
+    @property
+    def ready(self) -> bool:
+        return len(self.estimates) >= max(2, self.window // 2)
+
+    @property
+    def angle(self) -> Optional[float]:
+        if not self.estimates:
+            return None
+        return float(np.rad2deg(np.angle(self._weighted_vector())) % 360.0)
+
+    @property
+    def confidence(self) -> float:
+        if not self.estimates:
+            return 0.0
+        return float(min(abs(self._weighted_vector()), 1.0))
+
+    def reset(self):
+        self.estimates.clear()
+
+
+class ArrayDOA:
+    """SRP-PHAT DOA estimator for an individual array with frequency-bin gating."""
+
+    def __init__(
+        self,
+        array_id: str,
+        mic_positions_local: Dict[int, np.ndarray],
+        orientation_deg: float,
+        sample_rate: int = 44100,
+        grid_deg: float = 1.0,
+        freq_lo: float = 200.0,
+        freq_hi: float = 4000.0,
+        channel_delays: Optional[Dict[int, float]] = None,
+    ):
+        self.array_id = array_id
+        self.mic_positions = mic_positions_local
+        self.orientation_deg = orientation_deg
+        self.sample_rate = sample_rate
+        self.grid_deg = grid_deg
+        self.freq_lo = freq_lo
+        self.freq_hi = freq_hi
+
+        self.channels = sorted(self.mic_positions.keys())
+        self.angles = np.arange(0, 360, grid_deg)
+        self.n_angles = len(self.angles)
+
+        self.delays = None
+        if channel_delays:
+            self.delays = np.array([channel_delays.get(ch, 0.0) for ch in self.channels])
+
+        self._steer = None  # (F, M, T)
+        self._align = None
+        self._last_n = None
+        self._band_idx = None
+
+        self.tracker = CircularTracker(window=5, min_prominence=2.0)
+
+    def _build_steering(self, n_fft: int):
+        freqs = np.fft.rfftfreq(n_fft, 1.0 / self.sample_rate)
+        band_mask = (freqs >= self.freq_lo) & (freqs <= self.freq_hi)
+        f = freqs[band_mask]
+        self._band_idx = np.flatnonzero(band_mask)
+
+        if self.delays is not None:
+            self._align = np.exp(
+                +2j * np.pi * f[:, None] * self.delays[None, :] / self.sample_rate
+            ).astype(np.complex64)
+
+        # Local mic positions (M, 2): pos[:, 0] = lx (long axis), pos[:, 1] = ly (short axis)
+        pos = np.stack([self.mic_positions[ch] for ch in self.channels])  # (M, 2)
+        ang_rad = np.deg2rad(self.angles)
+        # Unit vectors in local frame: 0 deg = along long axis, 90 deg = across short axis
+        u_long = np.cos(ang_rad)   # (T,)
+        u_short = np.sin(ang_rad)  # (T,)
+        # Delay tau = -(lx * u_long + ly * u_short) / c -> (M, T)
+        tau = -(pos[:, 0:1] * u_long[None, :] + pos[:, 1:2] * u_short[None, :]) / SOUND_SPEED
+
+        # Steering matrix (F, M, T)
+        self._steer = np.exp(
+            +2j * np.pi * f[:, None, None] * tau[None, :, :]
+        ).astype(np.complex64)
+        return self._steer
+
+    def estimate(
+        self,
+        block: np.ndarray,
+        target_freq: Optional[float] = None,
+        target_bandwidth_hz: float = 60.0,
+    ) -> DOAResult:
+        """Estimate DOA. If target_freq is specified, steers ONLY on frequency bins around target_freq."""
+        n = block.shape[0]
+        if n != self._last_n:
+            self._build_steering(n)
+            self._last_n = n
+
+        # Extract only relevant channels (N, M)
+        x = np.stack([block[:, ch] for ch in self.channels], axis=1)
+        X = np.fft.rfft(x, axis=0)  # (N_freq, M)
+        freqs = np.fft.rfftfreq(n, 1.0 / self.sample_rate)
+
+        band = self._band_idx
+        Xb = X[band, :]
+        if self._align is not None:
+            Xb = Xb * self._align
+
+        fb = freqs[band]
+        energy = np.mean(np.abs(Xb) ** 2, axis=1)
+
+        # Frequency-gating: isolate target tone bins
+        keep = np.ones(len(fb), dtype=bool)
+        if target_freq is not None:
+            f_lo = max(self.freq_lo, target_freq - target_bandwidth_hz / 2.0)
+            f_hi = min(self.freq_hi, target_freq + target_bandwidth_hz / 2.0)
+            keep = (fb >= f_lo) & (fb <= f_hi)
+
+        if not np.any(keep):
+            return DOAResult(self.array_id, None, None, 0.0, 0.0, None)
+
+        # Reject bins below energy floor within the target band
+        max_energy = energy[keep].max()
+        keep &= energy >= max_energy * 0.05  # -13 dB from band peak
+
+        if not np.any(keep):
+            return DOAResult(self.array_id, None, None, 0.0, 0.0, None)
+
+        X_sel = Xb[keep]
+        w = energy[keep]
+        w = w / w.sum()
+
+        # Phase Transform (PHAT): normalize magnitude
+        A = X_sel / (np.abs(X_sel) + 1e-12)
+        steer_sel = self._steer[keep]  # (K, M, T)
+
+        # Beamforming dot product
+        s = np.einsum("km,kmt->kt", A, steer_sel)
+        p = (w[:, None] * (np.abs(s) ** 2)).sum(axis=0)  # (T,)
+
+        peak_idx = int(np.argmax(p))
+
+        # Circular parabolic interpolation for sub-degree accuracy
+        y0 = p[(peak_idx - 1) % self.n_angles]
+        y1 = p[peak_idx]
+        y2 = p[(peak_idx + 1) % self.n_angles]
+        denom = y0 - 2 * y1 + y2
+        frac = 0.0
+        if denom > 0:
+            frac = 0.5 * (y0 - y2) / denom
+
+        local_angle = (peak_idx + frac) * self.grid_deg % 360.0
+        prominence = float((p.max() - np.median(p)) / (np.std(p) + 1e-12))
+
+        # Add to circular tracker
+        self.tracker.add(local_angle, prominence)
+        smooth_local = self.tracker.angle if self.tracker.ready else local_angle
+        confidence = self.tracker.confidence if self.tracker.ready else 0.5
+
+        # Global bearing (relative to rig nose / +Y)
+        global_angle = (smooth_local + self.orientation_deg) % 360.0
+
+        return DOAResult(
+            array_id=self.array_id,
+            local_angle_deg=float(smooth_local),
+            global_angle_deg=float(global_angle),
+            prominence=prominence,
+            confidence=confidence,
+            spectrum=p,
+        )
+
+    def reset(self):
+        self.tracker.reset()
