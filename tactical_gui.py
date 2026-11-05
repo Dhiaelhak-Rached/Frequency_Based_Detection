@@ -158,22 +158,34 @@ class TacticalGUI:
         self.btn_toggle.pack(side="left", padx=(0, 10))
 
         # Band Low
-        tk.Label(act_row, text="Band Low (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
+        tk.Label(act_row, text="Band Low (Hz):", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(4, 2))
         self.var_low = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_low_hz"]))
-        tk.Entry(act_row, textvariable=self.var_low, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        entry_low = tk.Entry(act_row, textvariable=self.var_low, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_low.pack(side="left")
+        entry_low.bind("<Return>", lambda e: self.on_apply_band())
 
         # Band High
-        tk.Label(act_row, text="Band High (Hz):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Band High (Hz):", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(10, 2))
         self.var_high = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_high_hz"]))
-        tk.Entry(act_row, textvariable=self.var_high, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        entry_high = tk.Entry(act_row, textvariable=self.var_high, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_high.pack(side="left")
+        entry_high.bind("<Return>", lambda e: self.on_apply_band())
+
+        # Apply Band button
+        btn_apply = tk.Button(
+            act_row, text="Apply Band", font=("Helvetica", 9, "bold"),
+            bg="#21262d", fg=ACCENT, activebackground="#30363d", activeforeground=FG,
+            padx=6, pady=2, command=self.on_apply_band, relief="solid", bd=1
+        )
+        btn_apply.pack(side="left", padx=(6, 12))
 
         # Threshold
-        tk.Label(act_row, text="Threshold (dBFS):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Thresh (dBFS):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
         self.var_thresh = tk.StringVar(value=str(self.geo.cfg["default_detection"]["threshold_dbfs"]))
         tk.Entry(act_row, textvariable=self.var_thresh, width=5, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Averaging
-        tk.Label(act_row, text="Averaging:", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Label(act_row, text="Avg:", bg=PANEL, fg=FG).pack(side="left", padx=(8, 2))
         self.var_avg = tk.StringVar(value=str(self.geo.cfg["default_detection"]["average_blocks"]))
         tk.Entry(act_row, textvariable=self.var_avg, width=3, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
@@ -235,6 +247,7 @@ class TacticalGUI:
                 return
 
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
+            self.save_config()
             dev_map = {
                 "front": self.var_dev_front.get().strip(),
                 "left": self.var_dev_left.get().strip(),
@@ -249,6 +262,35 @@ class TacticalGUI:
             self.is_active = False
             self.btn_toggle.configure(text="START LISTENING", bg="#238636", activebackground="#2ea043")
             self.status_lbl.configure(text="STANDBY", fg=MUTED)
+
+    def on_apply_band(self):
+        try:
+            low = float(self.var_low.get())
+            high = float(self.var_high.get())
+            thresh = float(self.var_thresh.get())
+            avg = int(self.var_avg.get())
+            self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
+            self.save_config()
+            self.status_lbl.configure(text=f"BAND UPDATED: {low:g}-{high:g} Hz", fg=ACCENT)
+        except ValueError:
+            pass
+
+    def save_config(self):
+        try:
+            self.geo.cfg["default_detection"]["target_low_hz"] = float(self.var_low.get())
+            self.geo.cfg["default_detection"]["target_high_hz"] = float(self.var_high.get())
+            self.geo.cfg["default_detection"]["threshold_dbfs"] = float(self.var_thresh.get())
+            self.geo.cfg["default_detection"]["average_blocks"] = int(self.var_avg.get())
+            if "front" in self.geo.cfg.get("arrays", {}):
+                self.geo.cfg["arrays"]["front"]["device_index"] = int(self.var_dev_front.get().strip())
+            if "left" in self.geo.cfg.get("arrays", {}):
+                self.geo.cfg["arrays"]["left"]["device_index"] = int(self.var_dev_left.get().strip())
+            if "right" in self.geo.cfg.get("arrays", {}):
+                self.geo.cfg["arrays"]["right"]["device_index"] = int(self.var_dev_right.get().strip())
+            with open(self.geo.config_path, "w") as f:
+                json.dump(self.geo.cfg, f, indent=2)
+        except Exception:
+            pass
 
     def _update_loop(self):
         if self.is_active or self.simulate:
@@ -276,9 +318,9 @@ class TacticalGUI:
         prominences = {}
         for arr_id, doa_eng in self.doa_engines.items():
             if arr_id in blocks:
-                # Steer ONLY on detected target frequency bin if detected
+                # Steer ONLY on detected target frequency bin if detected, else user band
                 target_f = det_res.peak_freq if det_res.detected else None
-                res = doa_eng.estimate(blocks[arr_id], target_freq=target_f)
+                res = doa_eng.estimate(blocks[arr_id], target_freq=target_f, band=(low, high))
                 bearings[arr_id] = res.global_angle_deg
                 prominences[arr_id] = res.prominence
 

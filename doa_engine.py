@@ -141,10 +141,19 @@ class ArrayDOA:
         block: np.ndarray,
         target_freq: Optional[float] = None,
         target_bandwidth_hz: float = 60.0,
+        band: Optional[Tuple[float, float]] = None,
     ) -> DOAResult:
-        """Estimate DOA. If target_freq is specified, steers ONLY on frequency bins around target_freq."""
-        # Dynamically expand frequency band if target frequency exceeds current boundaries
-        if target_freq is not None:
+        """Estimate DOA. Fully controlled by GUI band [low, high] or specific target_freq."""
+        # Dynamically adapt frequency band from GUI band or detected target_freq
+        if band is not None:
+            low_hz, high_hz = float(band[0]), float(band[1])
+            needed_lo = max(20.0, low_hz - 25.0)
+            needed_hi = min(self.sample_rate / 2.0 - 50.0, high_hz + 25.0)
+            if abs(self.freq_lo - needed_lo) > 5.0 or abs(self.freq_hi - needed_hi) > 5.0:
+                self.freq_lo = needed_lo
+                self.freq_hi = needed_hi
+                self._last_n = None  # Rebuild steering grid for exact user band
+        elif target_freq is not None:
             needed_hi = min(self.sample_rate / 2.0 - 50.0, target_freq + target_bandwidth_hz)
             needed_lo = max(20.0, target_freq - target_bandwidth_hz)
             if needed_hi > self.freq_hi or needed_lo < self.freq_lo:
@@ -162,12 +171,12 @@ class ArrayDOA:
         X = np.fft.rfft(x, axis=0)  # (N_freq, M)
         freqs = np.fft.rfftfreq(n, 1.0 / self.sample_rate)
 
-        band = self._band_idx
-        Xb = X[band, :]
+        band_idx = self._band_idx
+        Xb = X[band_idx, :]
         if self._align is not None:
             Xb = Xb * self._align
 
-        fb = freqs[band]
+        fb = freqs[band_idx]
         energy = np.mean(np.abs(Xb) ** 2, axis=1)
 
         # Frequency-gating: isolate target tone bins
@@ -176,6 +185,8 @@ class ArrayDOA:
             f_lo = target_freq - target_bandwidth_hz / 2.0
             f_hi = target_freq + target_bandwidth_hz / 2.0
             keep = (fb >= f_lo) & (fb <= f_hi)
+        elif band is not None:
+            keep = (fb >= band[0]) & (fb <= band[1])
 
         if not np.any(keep):
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None)

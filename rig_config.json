@@ -6,13 +6,16 @@
     "apex_to_left_tip_m": 0.14,
     "apex_to_right_tip_m": 0.17,
     "rear_baseline_m": 0.185,
-    "uma16_grid": [4, 4],
+    "uma16_grid": [
+      4,
+      4
+    ],
     "uma16_width_m": 0.126,
     "uma16_length_m": 0.126
   },
   "default_detection": {
-    "target_low_hz": 900.0,
-    "target_high_hz": 1100.0,
+    "target_low_hz": 4800.0,
+    "target_high_hz": 4850.0,
     "threshold_dbfs": -65.0,
     "block_duration": 0.2,
     "average_blocks": 4
@@ -21,22 +24,53 @@
     "front": {
       "name": "UMA-8 Apex",
       "type": "uma8",
-      "center": [0.0, 0.0],
+      "center": [
+        0.0,
+        0.0
+      ],
       "orientation_deg": 0.0,
       "radius_m": 0.0855,
       "channels": 8,
-      "active_channels": [0, 1, 2, 3, 4, 5, 6],
+      "active_channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
       "device_index": 4,
       "device_hint": "miniDSP micArray"
     },
     "left": {
       "name": "UMA-16 Left",
       "type": "uma16",
-      "center": [-0.075, -0.260],
+      "center": [
+        -0.075,
+        -0.26
+      ],
       "orientation_deg": -20.0,
       "grid_m": 0.042,
       "channels": 16,
-      "active_channels": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      "active_channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
       "device_index": 1,
       "device_hint": "5- MCHStreamer",
       "cable": "black USB"
@@ -44,11 +78,31 @@
     "right": {
       "name": "UMA-16 Right",
       "type": "uma16",
-      "center": [0.085, -0.285],
+      "center": [
+        0.085,
+        -0.285
+      ],
       "orientation_deg": 22.0,
       "grid_m": 0.042,
       "channels": 16,
-      "active_channels": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      "active_channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
       "device_index": 2,
       "device_hint": "MCHStreamer",
       "cable": "white USB + green tape"

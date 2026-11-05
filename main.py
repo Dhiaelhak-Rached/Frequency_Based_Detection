@@ -147,7 +147,7 @@ def cmd_cli(args):
                 proms = {}
                 for arr_id, doa in doa_engines.items():
                     if arr_id in blocks:
-                        res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq)
+                        res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq, band=(args.low, args.high))
                         bearings[arr_id] = res.global_angle_deg
                         proms[arr_id] = res.prominence
 
@@ -208,7 +208,7 @@ def cmd_simulate(args):
         bearings = {}
         proms = {}
         for arr_id, doa in doa_engines.items():
-            res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq)
+            res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq, band=(args.freq - 100, args.freq + 100))
             bearings[arr_id] = res.global_angle_deg
             proms[arr_id] = res.prominence
             if res.global_angle_deg is not None:
