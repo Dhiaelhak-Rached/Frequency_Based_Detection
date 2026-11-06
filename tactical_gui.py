@@ -356,7 +356,11 @@ class TacticalGUI:
         if single_doa is not None or not det_res.detected:
             tri_res = self.triangulator.triangulate({}, {})
         else:
-            tri_res = self.triangulator.triangulate(bearings, prominences)
+            tri_res = self.triangulator.triangulate(
+                bearings,
+                prominences,
+                stable={arr_id: res.stable for arr_id, res in doa_results.items()},
+            )
 
         # 3. Update Telemetry & UI
         self._update_telemetry(det_res, tri_res, doa_errors, single_doa, single_array_id)
@@ -379,7 +383,7 @@ class TacticalGUI:
 
         if single_doa is not None:
             array_label = "UMA-8" if single_array_id == "front" else "UMA-16"
-            if det.detected and single_doa.global_angle_deg is not None and single_doa.prominence >= 1.4:
+            if det.detected and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
                 self.status_lbl.configure(text=f"{array_label} ONLY / BEARING LOCK", fg=OK, bg="#1a2733")
                 self.lbl_range.configure(text="-.-- m", fg=MUTED)
                 self.lbl_bearing.configure(text=f"{single_doa.global_angle_deg:5.1f}°", fg=OK)
@@ -503,7 +507,7 @@ class TacticalGUI:
                 continue
             cx, cy = to_canvas(arr.center[0], arr.center[1])
             col = RAY_FRONT if arr_id == "front" else (RAY_LEFT if arr_id == "left" else RAY_RIGHT)
-            if arr.array_type == "uma8":
+            if arr.array_type == "uma8" and arr.mount != "vertical":
                 c.create_oval(cx - 7, cy - 7, cx + 7, cy + 7, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 12, text="UMA-8", fill=col, font=("Helvetica", 7, "bold"))
             elif arr.mount == "vertical":
@@ -518,7 +522,7 @@ class TacticalGUI:
                 c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 16, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))
 
-        if single_doa is not None and single_doa.global_angle_deg is not None and single_doa.prominence >= 1.4:
+        if single_doa is not None and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
             arr = self.geo.arrays[single_array_id]
             ray_color = RAY_FRONT if single_array_id == "front" else RAY_LEFT
             array_label = "UMA-8" if single_array_id == "front" else "UMA-16"

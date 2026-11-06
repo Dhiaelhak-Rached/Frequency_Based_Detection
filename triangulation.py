@@ -45,11 +45,13 @@ class Triangulator:
         self,
         bearings: Dict[str, Optional[float]],
         prominences: Dict[str, float],
+        stable: Optional[Dict[str, bool]] = None,
     ) -> TriangulationResult:
         """Intersect bearing rays from arrays with valid detections.
 
         bearings: {array_id: global_bearing_deg}
         prominences: {array_id: prominence_score}
+        stable: {array_id: temporally stable despite lower prominence}
         """
         origins = []
         angles = []
@@ -60,7 +62,8 @@ class Triangulator:
             if angle is None or arr_id not in self.geo.arrays:
                 continue
             prom = prominences.get(arr_id, 1.0)
-            if prom < self.min_prominence:
+            is_stable = stable is not None and stable.get(arr_id, False)
+            if prom < self.min_prominence and not is_stable:
                 continue
 
             arr = self.geo.arrays[arr_id]

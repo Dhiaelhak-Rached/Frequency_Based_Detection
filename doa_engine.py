@@ -24,16 +24,25 @@ class DOAResult:
     confidence: float
     spectrum: Optional[np.ndarray]
     error: Optional[str] = None
+    stable: bool = False
 
 
 class CircularTracker:
     """Wrap-around safe temporal smoothing using circular statistics."""
 
-    def __init__(self, window: int = 5, min_prominence: float = 2.0, decay: float = 0.75, jump_deg: float = 40.0):
+    def __init__(
+        self,
+        window: int = 5,
+        min_prominence: float = 2.0,
+        decay: float = 0.75,
+        jump_deg: float = 40.0,
+        min_samples: int = 2,
+    ):
         self.window = window
         self.min_prominence = min_prominence
         self.decay = decay
         self.jump_deg = jump_deg
+        self.min_samples = min_samples
         self.estimates = deque(maxlen=window)
 
     def _circular_diff(self, a_deg: float, b_deg: float) -> float:
@@ -56,7 +65,7 @@ class CircularTracker:
 
     @property
     def ready(self) -> bool:
-        return len(self.estimates) >= max(2, self.window // 2)
+        return len(self.estimates) >= min(self.window, max(1, self.min_samples))
 
     @property
     def angle(self) -> Optional[float]:
@@ -105,8 +114,8 @@ class ArrayDOA:
         if self.mount == "vertical":
             horizontal_positions = np.unique(np.round(positions[:, 1], decimals=9))
             if len(horizontal_positions) < 2:
-                raise ValueError("A vertical UMA-16 needs microphones in at least two columns")
-            self.nominal_spacing_m = float(np.min(np.diff(horizontal_positions)))
+                raise ValueError("A vertical array needs at least two horizontal positions")
+            self.nominal_spacing_m = float(np.max(np.diff(horizontal_positions)))
         else:
             distances = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
             np.fill_diagonal(distances, np.inf)
@@ -128,7 +137,10 @@ class ArrayDOA:
         self._last_n = None
         self._band_idx = None
 
-        self.tracker = CircularTracker(window=5, min_prominence=2.0)
+        if self.mount == "vertical":
+            self.tracker = CircularTracker(window=5, min_prominence=0.45, min_samples=3)
+        else:
+            self.tracker = CircularTracker(window=5, min_prominence=2.0)
 
     def _build_steering(self, n_fft: int):
         freqs = np.fft.rfftfreq(n_fft, 1.0 / self.sample_rate)
@@ -257,6 +269,7 @@ class ArrayDOA:
         self.tracker.add(local_angle, prominence)
         smooth_local = self.tracker.angle if self.tracker.ready else local_angle
         confidence = self.tracker.confidence if self.tracker.ready else 0.5
+        stable = self.mount == "vertical" and self.tracker.ready and confidence >= 0.85
 
         # Global bearing (relative to rig nose / +Y)
         global_angle = (smooth_local + self.orientation_deg) % 360.0
@@ -268,6 +281,7 @@ class ArrayDOA:
             prominence=prominence,
             confidence=confidence,
             spectrum=p,
+            stable=stable,
         )
 
     def reset(self):

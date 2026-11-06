@@ -54,6 +54,9 @@ class RigGeometry:
         front_cfg = arr_cfgs.get("front", {})
         c_front = np.array(front_cfg.get("center", [0.0, 0.0]), dtype=float)
         rot_front = float(front_cfg.get("orientation_deg", 0.0))
+        front_mount = front_cfg.get("mount", "flat")
+        if front_mount not in ("flat", "vertical"):
+            raise ValueError(f"Unsupported UMA-8 mount: {front_mount!r}")
         radius = float(front_cfg.get("radius_m", 0.0855))
         mics_local_front = {}
         mics_global_front = {}
@@ -70,18 +73,21 @@ class RigGeometry:
             2: 250.0,
             3: 310.0,
         }
+        rot_rad = np.deg2rad(rot_front)
+        u_short = np.array([np.cos(rot_rad), -np.sin(rot_rad)])
         for ch, deg in perimeter_map.items():
             ang = np.deg2rad(deg)
-            # Local: lx along long/forward axis (0°), ly across (90°)
             lx = radius * np.cos(ang)
             ly = radius * np.sin(ang)
-            mics_local_front[ch] = np.array([lx, ly])
-
-            # Global coords
-            ang_global = np.deg2rad(rot_front + deg)
-            gx = c_front[0] + radius * np.sin(ang_global)
-            gy = c_front[1] + radius * np.cos(ang_global)
-            mics_global_front[ch] = np.array([gx, gy])
+            if front_mount == "vertical":
+                mics_local_front[ch] = np.array([0.0, ly])
+                mics_global_front[ch] = c_front + ly * u_short
+            else:
+                mics_local_front[ch] = np.array([lx, ly])
+                ang_global = np.deg2rad(rot_front + deg)
+                gx = c_front[0] + radius * np.sin(ang_global)
+                gy = c_front[1] + radius * np.cos(ang_global)
+                mics_global_front[ch] = np.array([gx, gy])
 
         self.arrays["front"] = ArrayGeometry(
             array_id="front",
@@ -91,6 +97,7 @@ class RigGeometry:
             orientation_deg=rot_front,
             local_mics=mics_local_front,
             mic_positions=mics_global_front,
+            mount=front_mount,
         )
 
         # 2. UMA-16 arrays. Channel N corresponds to PCB MIC N+1.

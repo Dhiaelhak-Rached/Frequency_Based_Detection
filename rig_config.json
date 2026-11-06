@@ -28,6 +28,7 @@
         0.0
       ],
       "orientation_deg": 0.0,
+      "mount": "vertical",
       "radius_m": 0.04275,
       "channels": 8,
       "active_channels": [
@@ -53,7 +54,7 @@
         0.0,
         0.0
       ],
-      "orientation_deg": 180.0,
+      "orientation_deg": 270.0,
       "mount": "vertical",
       "grid_m": 0.042,
       "channels": 16,

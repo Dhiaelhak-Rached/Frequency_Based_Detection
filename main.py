@@ -168,7 +168,7 @@ def cmd_cli(args):
                 if single_id:
                     single = results[single_id]
                     array_label = "UMA-8" if single_id == "front" else "UMA-16"
-                    if single.global_angle_deg is not None and single.prominence >= 1.4:
+                    if single.global_angle_deg is not None and (single.prominence >= 1.4 or single.stable):
                         print(
                             f"[{array_label} BEARING] {single.global_angle_deg:5.1f}° | "
                             f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | Direction only",
@@ -185,7 +185,11 @@ def cmd_cli(args):
                     time.sleep(0.1)
                     continue
 
-                tri = triangulator.triangulate(bearings, proms)
+                tri = triangulator.triangulate(
+                    bearings,
+                    proms,
+                    stable={arr_id: res.stable for arr_id, res in results.items()},
+                )
                 if tri.success and tri.x is not None:
                     print(
                         f"[TARGET LOCKED] (X: {tri.x:+5.2f}m, Y: {tri.y:+5.2f}m) | "
@@ -242,14 +246,16 @@ def cmd_simulate(args):
         det_res = detector.process(blocks["front"][:, 0], args.freq - 100, args.freq + 100)
         bearings = {}
         proms = {}
+        stable = {}
         for arr_id, doa in doa_engines.items():
             res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq, band=(args.freq - 100, args.freq + 100))
             bearings[arr_id] = res.global_angle_deg
             proms[arr_id] = res.prominence
+            stable[arr_id] = res.stable
             if res.global_angle_deg is not None:
                 bearings_log[arr_id].append(res.global_angle_deg)
 
-        tri = triangulator.triangulate(bearings, proms)
+        tri = triangulator.triangulate(bearings, proms, stable=stable)
         if tri.success and tri.x is not None:
             err_m = np.linalg.norm(np.array([tri.x, tri.y]) - np.array([args.target_x, args.target_y]))
             errors.append(err_m)

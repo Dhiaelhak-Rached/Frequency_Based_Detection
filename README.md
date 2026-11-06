@@ -1,8 +1,8 @@
 # Frequency-Locked Dual-Array Acoustic Triangulation System
 
 This package provides real-time acoustic frequency detection and 2D spatial triangulation using:
-- **Apex / Front**: miniDSP UMA-8 circular array (7 active microphones, 8.55 cm microphone-circle diameter)
-- **Left Flank**: full upright miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing the rig rear
+- **Apex / Front**: upright miniDSP UMA-8 circular array (7 active microphones), facing global forward (0°)
+- **Left Flank**: full upright miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing global left (270°)
 - **XMOS-board separation**: 36.5 cm between the UMA-8 and left UMA-16
 
 ```
@@ -18,12 +18,16 @@ The distance is measured between XMOS boards. The configurable
 `mic_center_offset_local_m` value translates the UMA-16 XMOS reference point to
 its acoustic array center; it currently defaults to zero until that offset is measured.
 
-The left UMA-16 uses `"mount": "vertical"`. Its `orientation_deg` is the outward
-acoustic-face normal, currently 180° (toward the rig rear). Column 0 is the viewer's left
-when looking at the label face from the target side. Only column spacing contributes
-to horizontal azimuth steering; vertical row displacement is excluded. The scan is
-restricted to ±90° around the board normal because a linear array has front-back
-ambiguity. Weak microphones can be excluded with the existing `active_channels` list.
+Both arrays use `"mount": "vertical"`. For a vertical array, `orientation_deg`
+is the outward acoustic-face normal, local +90° is the viewer's right on that face,
+and only horizontal microphone displacement contributes to azimuth steering. The
+scan is restricted to ±90° around the normal because a vertical array has front-back
+ambiguity. Weak UMA-16 microphones can be excluded with `active_channels`.
+
+High-prominence bearings use the existing acceptance cutoffs. Vertical arrays also
+accept low-prominence bearings after at least three consistent samples in a five-sample
+history with circular confidence of at least 0.85. Raw prominence is still reported
+unchanged and used for triangulation weighting.
 
 ---
 
