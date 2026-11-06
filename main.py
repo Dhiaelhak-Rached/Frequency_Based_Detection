@@ -108,6 +108,7 @@ def cmd_cli(args):
             mic_positions_local=arr.local_mics,
             orientation_deg=arr.orientation_deg,
             sample_rate=geo.sample_rate,
+            mount=arr.mount,
         )
     triangulator = Triangulator(geometry=geo, min_prominence=1.8)
     audio_mgr = MultiDeviceAudioManager(
@@ -214,6 +215,7 @@ def cmd_simulate(args):
             arr.local_mics,
             arr.orientation_deg,
             geo.sample_rate,
+            mount=arr.mount,
         )
         for arr_id, arr in geo.arrays.items()
     }

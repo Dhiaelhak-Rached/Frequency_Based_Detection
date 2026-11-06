@@ -61,6 +61,7 @@ class TacticalGUI:
                 mic_positions_local=arr.local_mics,
                 orientation_deg=arr.orientation_deg,
                 sample_rate=geometry.sample_rate,
+                mount=arr.mount,
                 freq_lo=200.0,
                 freq_hi=16000.0,
             )
@@ -485,6 +486,14 @@ class TacticalGUI:
             if arr.array_type == "uma8":
                 c.create_oval(cx - 7, cy - 7, cx + 7, cy + 7, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 12, text="UMA-8", fill=col, font=("Helvetica", 7, "bold"))
+            elif arr.mount == "vertical":
+                rad = np.deg2rad(arr.orientation_deg)
+                column_axis = np.array([np.cos(rad), -np.sin(rad)])
+                half_width = 0.063
+                p0 = to_canvas(*(arr.center - half_width * column_axis))
+                p1 = to_canvas(*(arr.center + half_width * column_axis))
+                c.create_line(p0[0], p0[1], p1[0], p1[1], fill=col, width=5)
+                c.create_text(cx, cy + 12, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))
             else:
                 c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 16, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))

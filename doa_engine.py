@@ -87,6 +87,7 @@ class ArrayDOA:
         freq_lo: float = 200.0,
         freq_hi: float = 16000.0,
         channel_delays: Optional[Dict[int, float]] = None,
+        mount: str = "flat",
     ):
         self.array_id = array_id
         self.mic_positions = mic_positions_local
@@ -95,15 +96,27 @@ class ArrayDOA:
         self.grid_deg = grid_deg
         self.freq_lo = freq_lo
         self.freq_hi = freq_hi
+        self.mount = mount
+        if self.mount not in ("flat", "vertical"):
+            raise ValueError(f"Unsupported array mount: {self.mount!r}")
 
         self.channels = sorted(self.mic_positions.keys())
         positions = np.stack([self.mic_positions[ch] for ch in self.channels])
-        distances = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
-        np.fill_diagonal(distances, np.inf)
-        nearest_spacings = distances.min(axis=1)
-        self.nominal_spacing_m = float(np.median(nearest_spacings[np.isfinite(nearest_spacings)]))
+        if self.mount == "vertical":
+            horizontal_positions = np.unique(np.round(positions[:, 1], decimals=9))
+            if len(horizontal_positions) < 2:
+                raise ValueError("A vertical UMA-16 needs microphones in at least two columns")
+            self.nominal_spacing_m = float(np.min(np.diff(horizontal_positions)))
+        else:
+            distances = np.linalg.norm(positions[:, None, :] - positions[None, :, :], axis=2)
+            np.fill_diagonal(distances, np.inf)
+            nearest_spacings = distances.min(axis=1)
+            self.nominal_spacing_m = float(np.median(nearest_spacings[np.isfinite(nearest_spacings)]))
         self.max_direction_freq_hz = SOUND_SPEED / (2.0 * self.nominal_spacing_m)
-        self.angles = np.arange(0, 360, grid_deg)
+        if self.mount == "vertical":
+            self.angles = np.arange(-90.0, 90.0 + grid_deg, grid_deg) % 360.0
+        else:
+            self.angles = np.arange(0, 360, grid_deg)
         self.n_angles = len(self.angles)
 
         self.delays = None
@@ -226,16 +239,18 @@ class ArrayDOA:
 
         peak_idx = int(np.argmax(p))
 
-        # Circular parabolic interpolation for sub-degree accuracy
-        y0 = p[(peak_idx - 1) % self.n_angles]
-        y1 = p[peak_idx]
-        y2 = p[(peak_idx + 1) % self.n_angles]
-        denom = y0 - 2 * y1 + y2
+        # Flat grids wrap; a vertical half-plane grid must not interpolate across its endpoints.
         frac = 0.0
-        if denom < 0:
-            frac = float(np.clip(0.5 * (y0 - y2) / denom, -0.5, 0.5))
+        can_interpolate = self.mount != "vertical" or 0 < peak_idx < self.n_angles - 1
+        if can_interpolate:
+            y0 = p[(peak_idx - 1) % self.n_angles]
+            y1 = p[peak_idx]
+            y2 = p[(peak_idx + 1) % self.n_angles]
+            denom = y0 - 2 * y1 + y2
+            if denom < 0:
+                frac = float(np.clip(0.5 * (y0 - y2) / denom, -0.5, 0.5))
 
-        local_angle = (peak_idx + frac) * self.grid_deg % 360.0
+        local_angle = (self.angles[peak_idx] + frac * self.grid_deg) % 360.0
         prominence = float((p.max() - np.median(p)) / (np.std(p) + 1e-12))
 
         # Add to circular tracker

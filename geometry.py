@@ -26,9 +26,10 @@ class ArrayGeometry:
     name: str
     array_type: str  # "uma8" or "uma16"
     center: np.ndarray  # shape (2,) [x, y] in meters
-    orientation_deg: float  # rotation relative to forward +Y (deg)
+    orientation_deg: float  # flat rotation, or acoustic-face normal when vertical (deg)
     local_mics: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [lx, ly] in local array frame
     mic_positions: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [gx, gy] in global coords
+    mount: str = "flat"
 
 
 class RigGeometry:
@@ -108,13 +109,15 @@ class RigGeometry:
             xmos_center = np.array(cfg.get("xmos_center", cfg.get("center", default_xmos)), dtype=float)
             rot_deg = float(cfg.get("orientation_deg", -90.0 if side == "left" else 90.0))
             grid_m = float(cfg.get("grid_m", 0.042))
+            mount = cfg.get("mount", "flat")
+            if mount not in ("flat", "vertical"):
+                raise ValueError(f"Unsupported UMA-16 mount: {mount!r}")
             center_offset = np.array(cfg.get("mic_center_offset_local_m", [0.0, 0.0]), dtype=float)
             active_channels = set(cfg.get("active_channels", range(16)))
             rot_rad = np.deg2rad(rot_deg)
 
-            # Axis vectors in global frame:
-            # u_long points from the USB/XMOS end toward the far end of the mic board
-            # u_short points across the board to its right
+            # Flat: u_long runs USB end -> far end. Vertical: u_long is the acoustic-face normal.
+            # u_short points to the viewer's right on the acoustic face; column 0 is viewer-left.
             u_long = np.array([np.sin(rot_rad), np.cos(rot_rad)])
             u_short = np.array([np.cos(rot_rad), -np.sin(rot_rad)])
             acoustic_center = xmos_center + center_offset[0] * u_long + center_offset[1] * u_short
@@ -124,7 +127,11 @@ class RigGeometry:
             for ch, (row, col) in uma16_mic_layout.items():
                 if ch not in active_channels:
                     continue
-                grid_local = np.array([(1.5 - row) * grid_m, (col - 1.5) * grid_m])
+                column_offset = (col - 1.5) * grid_m
+                if mount == "vertical":
+                    grid_local = np.array([0.0, column_offset])
+                else:
+                    grid_local = np.array([(1.5 - row) * grid_m, column_offset])
                 mics_local[ch] = grid_local - center_offset
                 mics_global[ch] = xmos_center + grid_local[0] * u_long + grid_local[1] * u_short
 
@@ -136,6 +143,7 @@ class RigGeometry:
                 orientation_deg=rot_deg,
                 local_mics=mics_local,
                 mic_positions=mics_global,
+                mount=mount,
             )
 
     def local_to_global_bearing(self, array_id: str, local_bearing_deg: float) -> float:
