@@ -45,7 +45,7 @@
       "device_hint": "miniDSP micArray"
     },
     "left": {
-      "name": "UMA-16 Left (Cut)",
+      "name": "UMA-16 Left",
       "type": "uma16",
       "xmos_center": [
         -0.295598291,
@@ -56,34 +56,6 @@
         0.0
       ],
       "orientation_deg": -90.0,
-      "grid_m": 0.042,
-      "channels": 16,
-      "active_channels": [
-        0,
-        2,
-        4,
-        6,
-        9,
-        11,
-        13,
-        15
-      ],
-      "device_index": 1,
-      "device_hint": "5- MCHStreamer",
-      "cable": "black USB"
-    },
-    "right": {
-      "name": "UMA-16 Right",
-      "type": "uma16",
-      "xmos_center": [
-        0.289401709,
-        -0.21411831
-      ],
-      "mic_center_offset_local_m": [
-        0.0,
-        0.0
-      ],
-      "orientation_deg": 90.0,
       "grid_m": 0.042,
       "channels": 16,
       "active_channels": [
@@ -102,6 +74,34 @@
         12,
         13,
         14,
+        15
+      ],
+      "device_index": 1,
+      "device_hint": "5- MCHStreamer",
+      "cable": "black USB"
+    },
+    "right": {
+      "name": "UMA-16 Right (Cut)",
+      "type": "uma16",
+      "xmos_center": [
+        0.289401709,
+        -0.21411831
+      ],
+      "mic_center_offset_local_m": [
+        0.0,
+        0.0
+      ],
+      "orientation_deg": 90.0,
+      "grid_m": 0.042,
+      "channels": 16,
+      "active_channels": [
+        0,
+        2,
+        4,
+        6,
+        9,
+        11,
+        13,
         15
       ],
       "device_index": 2,

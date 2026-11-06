@@ -2,8 +2,8 @@
 
 This package provides real-time acoustic frequency detection and 2D spatial triangulation tailored for a custom multi-array rig:
 - **Apex / Front**: miniDSP UMA-8 circular array (7 active microphones, 8.55 cm microphone-circle diameter)
-- **Left Flank**: cut miniDSP UMA-16 v2 array (8 surviving microphones), facing left
-- **Right Flank**: full miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing right
+- **Left Flank**: full miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing left
+- **Right Flank**: cut miniDSP UMA-16 v2 array (8 surviving microphones), facing right
 - **XMOS-board triangle**: 36.5 cm apex-to-left, 36 cm apex-to-right, and 58.5 cm rear baseline
 
 ```
@@ -12,7 +12,7 @@ This package provides real-time acoustic frequency detection and 2D spatial tria
                  36.5 cm   /        \   36 cm
                           /          \
                          /            \
-           [ Left UMA-16: 8 mics ]     [ Right UMA-16 ]
+           [ Left UMA-16 ]            [ Right UMA-16: 8 mics ]
              (Black USB)                (White USB + Tape)
                          \            /
                           \          /
