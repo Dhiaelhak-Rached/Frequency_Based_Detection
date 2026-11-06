@@ -2,7 +2,7 @@
 
 This package provides real-time acoustic frequency detection and 2D spatial triangulation using:
 - **Apex / Front**: miniDSP UMA-8 circular array (7 active microphones, 8.55 cm microphone-circle diameter)
-- **Left Flank**: full upright miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing global left
+- **Left Flank**: full upright miniDSP UMA-16 v2 array (16 microphones on a 42 mm grid), facing the rig rear
 - **XMOS-board separation**: 36.5 cm between the UMA-8 and left UMA-16
 
 ```
@@ -19,7 +19,7 @@ The distance is measured between XMOS boards. The configurable
 its acoustic array center; it currently defaults to zero until that offset is measured.
 
 The left UMA-16 uses `"mount": "vertical"`. Its `orientation_deg` is the outward
-acoustic-face normal, currently -90° (global left). Column 0 is the viewer's left
+acoustic-face normal, currently 180° (toward the rig rear). Column 0 is the viewer's left
 when looking at the label face from the target side. Only column spacing contributes
 to horizontal azimuth steering; vertical row displacement is excluded. The scan is
 restricted to ±90° around the board normal because a linear array has front-back
