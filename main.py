@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified entry point for Frequency-Locked 3-Array Acoustic Triangulation.
+"""Unified entry point for Frequency-Locked Dual-Array Acoustic Triangulation.
 
 Usage:
   # Launch 2D Tactical Radar GUI:
@@ -32,7 +32,7 @@ from audio_manager import MultiDeviceAudioManager
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Frequency-Locked 3-Array Acoustic Triangulation")
+    p = argparse.ArgumentParser(description="Frequency-Locked Dual-Array Acoustic Triangulation")
     sub = p.add_subparsers(dest="command", required=True)
 
     # 1. GUI
@@ -44,7 +44,6 @@ def parse_args():
     pg.add_argument("--threshold", type=float, default=None, help="detection threshold in dBFS")
     pg.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
     pg.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
-    pg.add_argument("--dev-right", default=None, help="device index or name for Right UMA-16")
 
     # 2. CLI
     pc = sub.add_parser("cli", help="run headless terminal tracking")
@@ -56,7 +55,6 @@ def parse_args():
     pc.add_argument("--average", type=int, default=4, help="number of averaged blocks")
     pc.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
     pc.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
-    pc.add_argument("--dev-right", default=None, help="device index or name for Right UMA-16")
 
     # 3. Simulate
     ps = sub.add_parser("simulate", help="run offline math verification benchmark")
@@ -66,7 +64,7 @@ def parse_args():
     ps.add_argument("--snr", type=float, default=12.0, help="signal to noise ratio in dB")
 
     # 4. Test Geometry
-    sub.add_parser("test-geometry", help="verify 3-array coordinate layout and baseline measurements")
+    sub.add_parser("test-geometry", help="verify dual-array coordinates and XMOS-board distance")
 
     # 5. List Devices
     sub.add_parser("list-devices", help="list audio input devices")
@@ -90,8 +88,6 @@ def cmd_gui(args):
         app.var_dev_front.set(str(args.dev_front))
     if args.dev_left is not None:
         app.var_dev_left.set(str(args.dev_left))
-    if args.dev_right is not None:
-        app.var_dev_right.set(str(args.dev_right))
     root.mainloop()
 
 
@@ -122,7 +118,7 @@ def cmd_cli(args):
     )
 
     print("===================================================================")
-    print(" UMA-8 Direction Tracker" if args.uma8_only else " 3-Array Acoustic Triangulation Tracker")
+    print(" UMA-8 Direction Tracker" if args.uma8_only else " Dual-Array Acoustic Triangulation Tracker")
     print(f" Target Band: {args.low:g} - {args.high:g} Hz | Threshold: {args.threshold:g} dBFS")
     print(f" Capture: {'SIMULATION' if args.simulate else 'HARDWARE'} | Arrays: {', '.join(selected_ids)}")
     print(" Press Ctrl+C to stop.")
@@ -133,8 +129,6 @@ def cmd_cli(args):
         dev_map["front"] = args.dev_front
     if args.dev_left is not None:
         dev_map["left"] = args.dev_left
-    if args.dev_right is not None:
-        dev_map["right"] = args.dev_right
 
     audio_mgr.start(device_map=dev_map if dev_map else None, array_ids=selected_ids)
     try:
@@ -183,7 +177,7 @@ def cmd_cli(args):
                         f"[TARGET LOCKED] (X: {tri.x:+5.2f}m, Y: {tri.y:+5.2f}m) | "
                         f"Range: {tri.range_m:4.2f}m | Bearing: {tri.bearing_deg:5.1f}° | "
                         f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                        f"Rays: {tri.active_rays}/3",
+                        f"Rays: {tri.active_rays}/{len(selected_ids)}",
                         flush=True,
                     )
                 else:
@@ -298,8 +292,6 @@ def cmd_test_geometry(args):
     }
     checks = (
         ("Apex to Left", "front", "left", "apex_to_left_m"),
-        ("Apex to Right", "front", "right", "apex_to_right_m"),
-        ("Rear Baseline", "left", "right", "rear_baseline_m"),
     )
     print("Physical Rig Checks (XMOS board to XMOS board):")
     for label, first, second, key in checks:

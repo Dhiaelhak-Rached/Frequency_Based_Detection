@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rig geometry and spatial coordinate transformations for 3-array acoustic localization.
+"""Rig geometry and spatial coordinate transformations for dual-array acoustic localization.
 
 Coordinate System:
   * Origin (0, 0, 0): Center of front UMA-8 circular array.
@@ -32,7 +32,7 @@ class ArrayGeometry:
 
 
 class RigGeometry:
-    """Unified 3-array coordinate system and mic placement manager."""
+    """Unified dual-array coordinate system and mic placement manager."""
 
     def __init__(self, config_path: str = None):
         if config_path is None:
@@ -92,7 +92,7 @@ class RigGeometry:
             mic_positions=mics_global_front,
         )
 
-        # 2. Left & Right UMA-16 arrays. Channel N corresponds to PCB MIC N+1.
+        # 2. UMA-16 arrays. Channel N corresponds to PCB MIC N+1.
         # Rows run from the far end (0) to the USB end (3); columns run left to right.
         uma16_mic_layout = {
             0: (3, 1), 1: (3, 0), 2: (2, 1), 3: (2, 0),

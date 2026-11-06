@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""2D Tactical Radar GUI for frequency-locked 3-array acoustic triangulation.
+"""2D Tactical Radar GUI for frequency-locked dual-array acoustic triangulation.
 
 Displays real-time FFT spectrum, live drone telemetry, and a top-down 2D
 tactical map plotting the physical rig and one validated bearing to the
@@ -41,7 +41,7 @@ class TacticalGUI:
         self.geo = geometry
         self.simulate = simulate
 
-        root.title("Acoustic Drone Tactical Radar — 3-Array Triangulation")
+        root.title("Acoustic Drone Tactical Radar — Dual-Array Triangulation")
         root.configure(bg=BG)
         root.geometry("1180x760")
         root.minsize(950, 650)
@@ -140,10 +140,6 @@ class TacticalGUI:
         self.var_dev_left = tk.StringVar(value=default_left)
         tk.Entry(dev_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
-        tk.Label(dev_row, text="Right (UMA-16):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
-        default_right = str(self.geo.cfg.get("arrays", {}).get("right", {}).get("device_index", 2))
-        self.var_dev_right = tk.StringVar(value=default_right)
-        tk.Entry(dev_row, textvariable=self.var_dev_right, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
         # Bottom row of controls: Filter settings & Action buttons
         act_row = tk.Frame(ctrl, bg=PANEL)
@@ -237,7 +233,6 @@ class TacticalGUI:
         return {
             "front": self.var_dev_front.get().strip(),
             "left": self.var_dev_left.get().strip(),
-            "right": self.var_dev_right.get().strip(),
         }
 
     def _selected_array_ids(self):
@@ -297,8 +292,6 @@ class TacticalGUI:
                 self.geo.cfg["arrays"]["front"]["device_index"] = int(self.var_dev_front.get().strip())
             if "left" in self.geo.cfg.get("arrays", {}):
                 self.geo.cfg["arrays"]["left"]["device_index"] = int(self.var_dev_left.get().strip())
-            if "right" in self.geo.cfg.get("arrays", {}):
-                self.geo.cfg["arrays"]["right"]["device_index"] = int(self.var_dev_right.get().strip())
             with open(self.geo.config_path, "w") as f:
                 json.dump(self.geo.cfg, f, indent=2)
         except Exception:
