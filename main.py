@@ -39,6 +39,7 @@ def parse_args():
     pg = sub.add_parser("gui", help="launch 2D tactical radar GUI")
     pg.add_argument("--simulate", action="store_true", help="run in simulation mode with virtual moving source")
     pg.add_argument("--uma8-only", action="store_true", help="use only the front UMA-8 and report direction without range")
+    pg.add_argument("--uma16-only", action="store_true", help="use only the left UMA-16 and report direction without range")
     pg.add_argument("--low", type=float, default=None, help="lower target band limit (Hz)")
     pg.add_argument("--high", type=float, default=None, help="upper target band limit (Hz)")
     pg.add_argument("--threshold", type=float, default=None, help="detection threshold in dBFS")
@@ -49,6 +50,7 @@ def parse_args():
     pc = sub.add_parser("cli", help="run headless terminal tracking")
     pc.add_argument("--simulate", action="store_true", help="run with virtual acoustic source")
     pc.add_argument("--uma8-only", action="store_true", help="use only the front UMA-8 and report direction without range")
+    pc.add_argument("--uma16-only", action="store_true", help="use only the left UMA-16 and report direction without range")
     pc.add_argument("--low", type=float, default=900.0, help="lower target band limit (Hz)")
     pc.add_argument("--high", type=float, default=1100.0, help="upper target band limit (Hz)")
     pc.add_argument("--threshold", type=float, default=-65.0, help="detection threshold (dBFS)")
@@ -69,7 +71,10 @@ def parse_args():
     # 5. List Devices
     sub.add_parser("list-devices", help="list audio input devices")
 
-    return p.parse_args()
+    args = p.parse_args()
+    if getattr(args, "uma8_only", False) and getattr(args, "uma16_only", False):
+        p.error("--uma8-only and --uma16-only are mutually exclusive")
+    return args
 
 
 def cmd_gui(args):
@@ -78,6 +83,7 @@ def cmd_gui(args):
     root = tk.Tk()
     app = TacticalGUI(root, geometry=geo, simulate=args.simulate)
     app.var_front_only.set(args.uma8_only)
+    app.var_left_only.set(args.uma16_only)
     if args.low is not None:
         app.var_low.set(str(args.low))
     if args.high is not None:
@@ -99,7 +105,13 @@ def cmd_cli(args):
         average_blocks=args.average,
         threshold_dbfs=args.threshold,
     )
-    selected_ids = ["front"] if args.uma8_only else list(geo.arrays)
+    if args.uma8_only:
+        selected_ids = ["front"]
+    elif args.uma16_only:
+        selected_ids = ["left"]
+    else:
+        selected_ids = list(geo.arrays)
+    single_id = selected_ids[0] if len(selected_ids) == 1 else None
     doa_engines = {}
     for arr_id in selected_ids:
         arr = geo.arrays[arr_id]
@@ -119,7 +131,7 @@ def cmd_cli(args):
     )
 
     print("===================================================================")
-    print(" UMA-8 Direction Tracker" if args.uma8_only else " Dual-Array Acoustic Triangulation Tracker")
+    print(f" {geo.arrays[single_id].name} Direction Tracker" if single_id else " Dual-Array Acoustic Triangulation Tracker")
     print(f" Target Band: {args.low:g} - {args.high:g} Hz | Threshold: {args.threshold:g} dBFS")
     print(f" Capture: {'SIMULATION' if args.simulate else 'HARDWARE'} | Arrays: {', '.join(selected_ids)}")
     print(" Press Ctrl+C to stop.")
@@ -153,22 +165,23 @@ def cmd_cli(args):
                         bearings[arr_id] = res.global_angle_deg
                         proms[arr_id] = res.prominence
 
-                if args.uma8_only:
-                    front = results["front"]
-                    if front.global_angle_deg is not None and front.prominence >= 1.4:
+                if single_id:
+                    single = results[single_id]
+                    array_label = "UMA-8" if single_id == "front" else "UMA-16"
+                    if single.global_angle_deg is not None and single.prominence >= 1.4:
                         print(
-                            f"[UMA-8 BEARING] {front.global_angle_deg:5.1f}° | "
+                            f"[{array_label} BEARING] {single.global_angle_deg:5.1f}° | "
                             f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | Direction only",
                             flush=True,
                         )
-                    elif front.error == "spatial_aliasing":
+                    elif single.error == "spatial_aliasing":
                         print(
                             f"[DOA BLOCKED] {det_res.peak_freq:6.1f}Hz exceeds "
-                            f"{doa_engines['front'].max_direction_freq_hz:.0f}Hz safe direction limit",
+                            f"{doa_engines[single_id].max_direction_freq_hz:.0f}Hz safe direction limit",
                             flush=True,
                         )
                     else:
-                        print(f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz | Waiting reliable UMA-8 bearing", flush=True)
+                        print(f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz | Waiting reliable {array_label} bearing", flush=True)
                     time.sleep(0.1)
                     continue
 
