@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from doa_engine import ArrayDOA, CircularTracker, SOUND_SPEED
+from doa_engine import ArrayDOA, CircularTracker, ElevationTracker, SOUND_SPEED
 from geometry import RigGeometry, bearing_to_vector
 
 
@@ -78,6 +78,7 @@ def make_engine(arr):
         arr.orientation_deg,
         sample_rate=44100,
         mount=arr.mount,
+        mic_heights_local=arr.mic_heights_local,
     )
 
 
@@ -213,6 +214,73 @@ class VerticalArrayTest(unittest.TestCase):
         result = engine.estimate(block, target_freq=1010.0, band=(980.0, 1040.0))
         print(f"flat UMA8 az={expected:+.0f} -> global={result.global_angle_deg:.3f}", flush=True)
         self.assertLessEqual(angle_error(result.global_angle_deg, expected), 5.0)
+        self.assertIsNone(result.elevation_deg)
+        self.assertIsNone(result.direction_vector)
+
+    def test_uma16_microphone_heights_have_real_row_signs(self):
+        arr = RigGeometry().arrays["left"]
+        grid = RigGeometry().cfg["arrays"]["left"]["grid_m"]
+        self.assertAlmostEqual(arr.mic_heights_local[6], 1.5 * grid)
+        self.assertAlmostEqual(arr.mic_heights_local[0], -1.5 * grid)
+        self.assertEqual(len(set(arr.mic_heights_local.values())), 4)
+
+    def test_uma16_elevation_and_unit_direction_vector(self):
+        geo = RigGeometry()
+        arr = geo.arrays["left"]
+        grid = geo.cfg["arrays"]["left"]["grid_m"]
+        for azimuth in (-30.0, 0.0, 30.0):
+            for elevation in (-30.0, 0.0, 30.0):
+                with self.subTest(azimuth=azimuth, elevation=elevation):
+                    engine = make_engine(arr)
+                    block = vertical_uma16_block(
+                        arr,
+                        grid,
+                        azimuth,
+                        elevation,
+                        seed=int(8000 + azimuth * 10 + elevation),
+                        snr_db=30.0,
+                    )
+                    for _ in range(3):
+                        result = engine.estimate(block, target_freq=1010.0, band=(980.0, 1040.0))
+                    self.assertIsNotNone(result.elevation_deg)
+                    self.assertLessEqual(abs(result.elevation_deg - elevation), 2.0)
+                    vector = result.direction_vector
+                    self.assertAlmostEqual(np.linalg.norm(vector), 1.0)
+                    self.assertAlmostEqual(vector[2], np.sin(np.deg2rad(result.elevation_deg)))
+                    expected_horizontal = np.cos(np.deg2rad(result.elevation_deg))
+                    self.assertAlmostEqual(np.linalg.norm(vector[:2]), expected_horizontal)
+                    if elevation > 0:
+                        self.assertGreater(vector[2], 0.0)
+                    elif elevation < 0:
+                        self.assertLess(vector[2], 0.0)
+
+    def test_elevation_is_not_invented_without_vertical_geometry(self):
+        geo = RigGeometry()
+        arr = geo.arrays["left"]
+        engine = ArrayDOA(
+            arr.array_id,
+            arr.local_mics,
+            arr.orientation_deg,
+            sample_rate=44100,
+            mount="vertical",
+        )
+        block = vertical_uma16_block(arr, 0.042, 0.0, 30.0, seed=9100, snr_db=30.0)
+        result = engine.estimate(block, target_freq=1010.0, band=(980.0, 1040.0))
+        self.assertFalse(engine.elevation_enabled)
+        self.assertIsNone(result.elevation_deg)
+        self.assertIsNone(result.direction_vector)
+
+    def test_elevation_tracker_rejects_low_confidence_and_resets(self):
+        tracker = ElevationTracker()
+        tracker.add(10.0, 0.1)
+        self.assertFalse(tracker.ready)
+        for elevation in (10.0, 12.0, 14.0):
+            tracker.add(elevation, 1.0)
+        self.assertTrue(tracker.ready)
+        self.assertGreater(tracker.confidence, 0.85)
+        tracker.reset()
+        self.assertFalse(tracker.ready)
+        self.assertIsNone(tracker.angle)
 
 
 if __name__ == "__main__":

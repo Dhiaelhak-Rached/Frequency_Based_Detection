@@ -66,8 +66,8 @@ class TacticalGUI:
 
         root.title("Acoustic + Camera Drone Tactical Radar")
         root.configure(bg=BG)
-        root.geometry("1360x860")
-        root.minsize(1100, 740)
+        root.geometry("1360x1020")
+        root.minsize(1100, 940)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # Core Engines
@@ -85,6 +85,7 @@ class TacticalGUI:
                 orientation_deg=arr.orientation_deg,
                 sample_rate=geometry.sample_rate,
                 mount=arr.mount,
+            mic_heights_local=arr.mic_heights_local,
                 freq_lo=200.0,
                 freq_hi=16000.0,
             )
@@ -136,6 +137,7 @@ class TacticalGUI:
         )
         self.lbl_range = self._create_metric(top_frame, "RANGE", "-.-- m")
         self.lbl_bearing = self._create_metric(top_frame, "BEARING", "---.-°")
+        self.lbl_elevation = self._create_metric(top_frame, "ELEVATION", "---.-°")
         self.lbl_coords = self._create_metric(top_frame, "COORDINATES (X, Y)", "X: -.--  Y: -.--")
 
         # 2. Main Visual Body (Spectrum on Left, Radar Map on Right)
@@ -163,39 +165,110 @@ class TacticalGUI:
         )
         self.camera_video_lbl.pack(fill="both", expand=True, padx=4, pady=4)
 
-        # Right: 2D Tactical Radar Canvas
-        radar_frame = tk.LabelFrame(body, text=" 2D Tactical Spatial Map (Top-Down Triangulation) ", bg=BG, fg=FG,
+        right_visual = tk.Frame(body, bg=BG)
+        right_visual.pack(side="right", fill="both", expand=True)
+        radar_frame = tk.LabelFrame(right_visual, text=" 2D Tactical Spatial Map (Top-Down Triangulation) ", bg=BG, fg=FG,
                                     font=("Helvetica", 10, "bold"), highlightbackground=BORDER)
-        radar_frame.pack(side="right", fill="both", expand=True)
-        self.canvas_radar = tk.Canvas(radar_frame, width=680, height=480, bg="#0d1117", highlightthickness=0)
+        radar_frame.pack(side="top", fill="both", expand=True)
+        self.canvas_radar = tk.Canvas(radar_frame, width=680, height=360, bg="#0d1117", highlightthickness=0)
         self.canvas_radar.pack(fill="both", expand=True, padx=4, pady=4)
 
-        # 3. Bottom Controls Panel
+        direction_frame = tk.LabelFrame(right_visual, text=" SOUND DIRECTION — CLEAR 3D VIEW ", bg=BG, fg=FG,
+                                        font=("Helvetica", 10, "bold"), highlightbackground=BORDER)
+        direction_frame.pack(side="bottom", fill="x", pady=(6, 0))
+        self.canvas_direction = tk.Canvas(direction_frame, width=680, height=260, bg="#0d1117", highlightthickness=0)
+        self.canvas_direction.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # 3. Actions and organized settings
         ctrl = tk.Frame(self.root, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
         ctrl.pack(fill="x", padx=10, pady=(6, 10))
 
-        # Top row of controls: Audio Device Mapping
-        dev_row = tk.Frame(ctrl, bg=PANEL)
-        dev_row.pack(fill="x", padx=8, pady=(6, 2))
+        action_row = tk.Frame(ctrl, bg=PANEL)
+        action_row.pack(fill="x", padx=8, pady=(6, 4))
+        self.btn_toggle = tk.Button(
+            action_row, text="START LISTENING", font=("Helvetica", 11, "bold"),
+            bg="#238636", fg="#ffffff", activebackground="#2ea043",
+            padx=14, pady=4, command=self.on_toggle_listening, relief="flat",
+        )
+        self.btn_toggle.pack(side="left", padx=(4, 12))
+        self.classifier_status_lbl = tk.Label(
+            action_row,
+            text="CLASSIFIER ACTIVE" if self.classifier is not None else "CLASSIFIER OFF",
+            font=("Helvetica", 9, "bold"),
+            bg=PANEL,
+            fg=OK if self.classifier is not None else MUTED,
+        )
+        self.classifier_status_lbl.pack(side="left", padx=4)
+        tk.Label(action_row, text="Map Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
+        self.slider_zoom = tk.Scale(
+            action_row, from_=30, to=200, orient="horizontal", showvalue=True, bg=PANEL,
+            fg=FG, troughcolor="#0d1117", highlightthickness=0, length=110,
+            command=self.on_zoom_change,
+        )
+        self.slider_zoom.set(int(self.map_scale))
+        self.slider_zoom.pack(side="right", padx=4)
 
-        tk.Label(dev_row, text="Mic Device IDs:", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(0, 8))
+        settings = tk.LabelFrame(
+            ctrl,
+            text=" Settings ",
+            bg=PANEL,
+            fg=ACCENT,
+            font=("Helvetica", 10, "bold"),
+            highlightbackground=BORDER,
+        )
+        settings.pack(fill="x", padx=8, pady=(2, 8))
+        settings.columnconfigure(0, weight=1)
+        settings.columnconfigure(1, weight=2)
+        settings.columnconfigure(2, weight=1)
 
-        tk.Label(dev_row, text="Front (UMA-8):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
+        audio_settings = tk.LabelFrame(settings, text=" Audio & Detection ", bg=PANEL, fg=FG, padx=6, pady=4)
+        audio_settings.grid(row=0, column=0, sticky="nsew", padx=(4, 6), pady=4)
+        mic_row = tk.Frame(audio_settings, bg=PANEL)
+        mic_row.pack(fill="x", pady=2)
+        tk.Label(mic_row, text="UMA-8 ID:", bg=PANEL, fg=FG).pack(side="left")
         default_front = str(self.geo.cfg.get("arrays", {}).get("front", {}).get("device_index", 4))
         self.var_dev_front = tk.StringVar(value=default_front)
-        tk.Entry(dev_row, textvariable=self.var_dev_front, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
-
-        tk.Label(dev_row, text="Left (UMA-16):", bg=PANEL, fg=FG).pack(side="left", padx=(10, 2))
+        tk.Entry(mic_row, textvariable=self.var_dev_front, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=(4, 12))
+        tk.Label(mic_row, text="UMA-16 ID:", bg=PANEL, fg=FG).pack(side="left")
         default_left = str(self.geo.cfg.get("arrays", {}).get("left", {}).get("device_index", 1))
         self.var_dev_left = tk.StringVar(value=default_left)
-        tk.Entry(dev_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
+        tk.Entry(mic_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=4)
 
-        camera_row = tk.Frame(ctrl, bg=PANEL)
-        camera_row.pack(fill="x", padx=8, pady=(4, 2))
+        band_row = tk.Frame(audio_settings, bg=PANEL)
+        band_row.pack(fill="x", pady=2)
+        tk.Label(band_row, text="Band Low:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_low = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_low_hz"]))
+        entry_low = tk.Entry(band_row, textvariable=self.var_low, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_low.pack(side="left", padx=(4, 8))
+        entry_low.bind("<Return>", lambda event: self.on_apply_band())
+        tk.Label(band_row, text="High:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_high = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_high_hz"]))
+        entry_high = tk.Entry(band_row, textvariable=self.var_high, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_high.pack(side="left", padx=4)
+        entry_high.bind("<Return>", lambda event: self.on_apply_band())
+
+        quality_row = tk.Frame(audio_settings, bg=PANEL)
+        quality_row.pack(fill="x", pady=2)
+        tk.Label(quality_row, text="Threshold:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_thresh = tk.StringVar(value=str(self.geo.cfg["default_detection"]["threshold_dbfs"]))
+        tk.Entry(quality_row, textvariable=self.var_thresh, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=(4, 8))
+        tk.Label(quality_row, text="Avg:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_avg = tk.StringVar(value=str(self.geo.cfg["default_detection"]["average_blocks"]))
+        tk.Entry(quality_row, textvariable=self.var_avg, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=4)
+        tk.Button(
+            quality_row, text="Apply Audio", font=("Helvetica", 9, "bold"),
+            bg="#21262d", fg=ACCENT, activebackground="#30363d", activeforeground=FG,
+            padx=6, pady=2, command=self.on_apply_band, relief="flat",
+        ).pack(side="right", padx=4)
+
+        camera_settings = tk.LabelFrame(settings, text=" Camera ", bg=PANEL, fg=FG, padx=6, pady=4)
+        camera_settings.grid(row=0, column=1, sticky="nsew", padx=6, pady=4)
+        camera_action_row = tk.Frame(camera_settings, bg=PANEL)
+        camera_action_row.pack(fill="x", pady=2)
         self.var_vision_enabled = tk.BooleanVar(value=self.vision is not None)
         tk.Checkbutton(
-            camera_row,
-            text="Camera Detection",
+            camera_action_row,
+            text="Enable Camera Detection",
             variable=self.var_vision_enabled,
             bg=PANEL,
             fg=FG,
@@ -204,154 +277,82 @@ class TacticalGUI:
             activeforeground=FG,
             command=self.on_toggle_vision,
             state="normal" if self.vision is not None else "disabled",
-        ).pack(side="left", padx=(4, 8))
-        tk.Label(camera_row, text="Camera:", bg=PANEL, fg=ACCENT).pack(side="left", padx=(4, 2))
+        ).pack(side="left")
+        tk.Button(
+            camera_action_row,
+            text="Refresh Cameras",
+            command=self.on_refresh_cameras,
+            bg="#21262d",
+            fg=ACCENT,
+            relief="flat",
+            state="normal" if self.vision is not None else "disabled",
+        ).pack(side="right", padx=4)
+
+        camera_source_row = tk.Frame(camera_settings, bg=PANEL)
+        camera_source_row.pack(fill="x", pady=2)
+        tk.Label(camera_source_row, text="Source:", bg=PANEL, fg=FG).pack(side="left")
         self.var_camera = tk.StringVar(value=str(self.vision.camera) if self.vision is not None else "")
         self.camera_combo = ttk.Combobox(
-            camera_row,
+            camera_source_row,
             textvariable=self.var_camera,
             values=self._camera_sources(),
-            width=46,
+            width=42,
             state="normal" if self.vision is not None else "disabled",
         )
-        self.camera_combo.pack(side="left", padx=4)
+        self.camera_combo.pack(side="left", fill="x", expand=True, padx=4)
         self.camera_combo.bind("<<ComboboxSelected>>", self.on_camera_selected)
         self.camera_combo.bind("<Return>", self.on_camera_selected)
-        tk.Label(camera_row, text="HFOV °:", bg=PANEL, fg=ACCENT).pack(side="left", padx=(8, 2))
+
+        fov_row = tk.Frame(camera_settings, bg=PANEL)
+        fov_row.pack(fill="x", pady=2)
+        tk.Label(fov_row, text="Horizontal FOV (°):", bg=PANEL, fg=FG).pack(side="left")
         initial_fov = self.vision.horizontal_fov_deg if self.vision is not None else None
         self.var_camera_fov = tk.StringVar(value="" if initial_fov is None else f"{initial_fov:g}")
         self.camera_fov_entry = tk.Entry(
-            camera_row,
+            fov_row,
             textvariable=self.var_camera_fov,
-            width=6,
+            width=7,
             bg="#0d1117",
             fg=FG,
             insertbackground=FG,
             state="normal" if self.vision is not None else "disabled",
         )
-        self.camera_fov_entry.pack(side="left")
+        self.camera_fov_entry.pack(side="left", padx=4)
         self.camera_fov_entry.bind("<Return>", lambda event: self.on_apply_fov())
         tk.Button(
-            camera_row,
+            fov_row,
             text="Apply FOV",
             command=self.on_apply_fov,
             bg="#21262d",
             fg=ACCENT,
             relief="flat",
             state="normal" if self.vision is not None else "disabled",
-        ).pack(side="left", padx=4)
-        tk.Button(
-            camera_row,
-            text="Refresh",
-            command=self.on_refresh_cameras,
-            bg="#21262d",
-            fg=ACCENT,
-            relief="flat",
-            state="normal" if self.vision is not None else "disabled",
-        ).pack(side="left", padx=4)
+        ).pack(side="right", padx=4)
 
-        # Bottom row of controls: Filter settings & Action buttons
-        act_row = tk.Frame(ctrl, bg=PANEL)
-        act_row.pack(fill="x", padx=8, pady=(4, 6))
-
-        self.btn_toggle = tk.Button(
-            act_row, text="START LISTENING", font=("Helvetica", 11, "bold"),
-            bg="#238636", fg="#ffffff", activebackground="#2ea043",
-            padx=14, pady=4, command=self.on_toggle_listening, relief="flat",
-        )
-        self.btn_toggle.pack(side="left", padx=(0, 10))
-
-        # Band Low
-        tk.Label(act_row, text="Band Low (Hz):", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(4, 2))
-        self.var_low = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_low_hz"]))
-        entry_low = tk.Entry(act_row, textvariable=self.var_low, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
-        entry_low.pack(side="left")
-        entry_low.bind("<Return>", lambda e: self.on_apply_band())
-
-        # Band High
-        tk.Label(act_row, text="Band High (Hz):", font=("Helvetica", 9, "bold"), bg=PANEL, fg=ACCENT).pack(side="left", padx=(10, 2))
-        self.var_high = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_high_hz"]))
-        entry_high = tk.Entry(act_row, textvariable=self.var_high, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
-        entry_high.pack(side="left")
-        entry_high.bind("<Return>", lambda e: self.on_apply_band())
-
-        # Apply Band button
-        btn_apply = tk.Button(
-            act_row, text="Apply Band", font=("Helvetica", 9, "bold"),
-            bg="#21262d", fg=ACCENT, activebackground="#30363d", activeforeground=FG,
-            padx=6, pady=2, command=self.on_apply_band, relief="solid", bd=1
-        )
-        btn_apply.pack(side="left", padx=(6, 12))
-
-        # Threshold
-        tk.Label(act_row, text="Thresh (dBFS):", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
-        self.var_thresh = tk.StringVar(value=str(self.geo.cfg["default_detection"]["threshold_dbfs"]))
-        tk.Entry(act_row, textvariable=self.var_thresh, width=5, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
-
-        # Averaging
-        tk.Label(act_row, text="Avg:", bg=PANEL, fg=FG).pack(side="left", padx=(8, 2))
-        self.var_avg = tk.StringVar(value=str(self.geo.cfg["default_detection"]["average_blocks"]))
-        tk.Entry(act_row, textvariable=self.var_avg, width=3, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
-
-        # Simulation Toggle
+        mode_settings = tk.LabelFrame(settings, text=" Modes & Lock ", bg=PANEL, fg=FG, padx=8, pady=4)
+        mode_settings.grid(row=0, column=2, sticky="nsew", padx=(6, 4), pady=4)
         self.var_sim = tk.BooleanVar(value=self.simulate)
-        chk_sim = tk.Checkbutton(
-            act_row, text="Simulation Mode", variable=self.var_sim, bg=PANEL, fg=FG,
+        tk.Checkbutton(
+            mode_settings, text="Simulation Mode", variable=self.var_sim, bg=PANEL, fg=FG,
             selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
             command=self.on_toggle_sim,
-        )
-        chk_sim.pack(side="left", padx=(14, 8))
-
+        ).pack(anchor="w")
         self.var_front_only = tk.BooleanVar(value=False)
-        chk_front = tk.Checkbutton(
-            act_row, text="UMA-8 Only", variable=self.var_front_only, bg=PANEL, fg=FG,
+        tk.Checkbutton(
+            mode_settings, text="UMA-8 Only", variable=self.var_front_only, bg=PANEL, fg=FG,
             selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
             command=lambda: self.on_array_mode_change("front"),
-        )
-        chk_front.pack(side="left", padx=(4, 8))
-
+        ).pack(anchor="w")
         self.var_left_only = tk.BooleanVar(value=False)
-        chk_left = tk.Checkbutton(
-            act_row, text="UMA-16 Only", variable=self.var_left_only, bg=PANEL, fg=FG,
+        tk.Checkbutton(
+            mode_settings, text="UMA-16 Only", variable=self.var_left_only, bg=PANEL, fg=FG,
             selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
             command=lambda: self.on_array_mode_change("left"),
-        )
-        chk_left.pack(side="left", padx=(4, 8))
-
-        # Scale slider
-        tk.Label(act_row, text="Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
-        self.slider_zoom = tk.Scale(
-            act_row, from_=30, to=200, orient="horizontal", showvalue=0, bg=PANEL,
-            troughcolor="#0d1117", highlightthickness=0, length=80, command=self.on_zoom_change
-        )
-        self.slider_zoom.set(int(self.map_scale))
-        self.slider_zoom.pack(side="right", padx=4)
-
-        classifier_row = tk.Frame(ctrl, bg=PANEL)
-        classifier_row.pack(fill="x", padx=8, pady=(0, 6))
-        self.classifier_status_lbl = tk.Label(
-            classifier_row,
-            text="CLASSIFIER ACTIVE" if self.classifier is not None else "CLASSIFIER OFF",
-            font=("Helvetica", 9, "bold"),
-            bg=PANEL,
-            fg=OK if self.classifier is not None else MUTED,
-        )
-        self.classifier_status_lbl.pack(side="left", padx=(4, 14))
-        self.var_require_drone = tk.BooleanVar(value=self.require_drone)
-        tk.Checkbutton(
-            classifier_row,
-            text="Require Drone ID for Lock",
-            variable=self.var_require_drone,
-            bg=PANEL,
-            fg=FG,
-            selectcolor="#0d1117",
-            activebackground=PANEL,
-            activeforeground=FG,
-        ).pack(side="left")
+        ).pack(anchor="w")
         self.var_uma16_front_only = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            classifier_row,
-            text="UMA-16 Front Only",
+            mode_settings,
+            text="UMA-16 Front Only (3D)",
             variable=self.var_uma16_front_only,
             bg=PANEL,
             fg=FG,
@@ -359,7 +360,18 @@ class TacticalGUI:
             activebackground=PANEL,
             activeforeground=FG,
             command=lambda: self.on_array_mode_change("uma16_front"),
-        ).pack(side="left", padx=(14, 4))
+        ).pack(anchor="w")
+        self.var_require_drone = tk.BooleanVar(value=self.require_drone)
+        tk.Checkbutton(
+            mode_settings,
+            text="Require Drone ID for Lock",
+            variable=self.var_require_drone,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(anchor="w", pady=(4, 0))
 
     def _create_metric(self, parent: tk.Frame, title: str, init_val: str) -> tk.Label:
         box = tk.Frame(parent, bg=PANEL)
@@ -520,6 +532,7 @@ class TacticalGUI:
             orientation_deg=arr.orientation_deg,
             sample_rate=self.geo.sample_rate,
             mount=arr.mount,
+            mic_heights_local=arr.mic_heights_local,
             freq_lo=200.0,
             freq_hi=16000.0,
         )
@@ -642,7 +655,7 @@ class TacticalGUI:
         single_array_id = selected_ids[0] if len(selected_ids) == 1 else None
         single_doa = doa_results.get(single_array_id) if single_array_id else None
         if single_doa is not None or not det_res.detected:
-            tri_res = self.triangulator.triangulate({}, {})
+            tri_res = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
         else:
             tri_res = self.triangulator.triangulate(
                 bearings,
@@ -654,6 +667,7 @@ class TacticalGUI:
         self._update_telemetry(det_res, tri_res, doa_errors, single_doa, single_array_id)
         self._draw_spectrum(det_res)
         self._draw_tactical_map(tri_res, single_doa if det_res.detected else None, single_array_id)
+        self._draw_direction_3d(single_doa, single_array_id)
 
     def _update_classification_metric(self):
         result = self.classification
@@ -691,6 +705,7 @@ class TacticalGUI:
     def _clear_target_telemetry(self):
         self.lbl_range.configure(text="-.-- m", fg=MUTED)
         self.lbl_bearing.configure(text="---.-°", fg=MUTED)
+        self.lbl_elevation.configure(text="---.-°", fg=MUTED)
         self.lbl_coords.configure(text="X: -.--  Y: -.--", fg=MUTED)
 
     def _update_telemetry(
@@ -718,6 +733,15 @@ class TacticalGUI:
                 array_label = "UMA-16 FRONT"
             else:
                 array_label = "UMA-16"
+            if single_array_id == "left":
+                if single_doa.elevation_deg is None:
+                    self.lbl_elevation.configure(text="UNCERTAIN", fg=MUTED)
+                else:
+                    elevation = single_doa.elevation_deg
+                    vertical = "ABOVE" if elevation > 2.0 else "BELOW" if elevation < -2.0 else "LEVEL"
+                    self.lbl_elevation.configure(text=f"{elevation:+.1f}° {vertical}", fg=ACCENT)
+            else:
+                self.lbl_elevation.configure(text="N/A", fg=MUTED)
             if det.detected and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
                 if require_drone and not drone_confirmed:
                     status = f"{array_label} BEARING / DRONE ID REQUIRED"
@@ -745,6 +769,7 @@ class TacticalGUI:
                 self._clear_target_telemetry()
             return
 
+        self.lbl_elevation.configure(text="N/A", fg=MUTED)
         if det.detected:
             if tri.success and tri.x is not None and tri.y is not None:
                 if require_drone and not drone_confirmed:
@@ -824,6 +849,83 @@ class TacticalGUI:
             tx = (f_tick / max_f) * w
             c.create_line(tx, h - 5, tx, h, fill=MUTED)
             c.create_text(tx, h - 12, text=f"{f_tick/1000:g}k", fill=MUTED, font=("Monospace", 7))
+
+    def _draw_direction_3d(self, result, array_id):
+        c = self.canvas_direction
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 10:
+            w, h = 680, 260
+        c.create_text(16, 12, text="SOUND SOURCE DIRECTION", fill=MUTED, anchor="nw", font=("Helvetica", 9, "bold"))
+        if array_id != "left":
+            c.create_text(
+                w / 2,
+                h / 2,
+                text="SELECT UMA-16 ONLY OR UMA-16 FRONT ONLY",
+                fill=MUTED,
+                font=("Helvetica", 13, "bold"),
+            )
+            return
+
+        cx, cy = w * 0.33, h * 0.64
+        scale = min(w * 0.34, h * 0.42)
+
+        def project(vector):
+            x, y, z = vector
+            return cx + scale * (x - 0.65 * y), cy + scale * (0.28 * x + 0.28 * y - z)
+
+        plane = [
+            project((-1.0, -1.0, 0.0)),
+            project((1.0, -1.0, 0.0)),
+            project((1.0, 1.0, 0.0)),
+            project((-1.0, 1.0, 0.0)),
+        ]
+        c.create_polygon(plane, fill="#101c26", outline="#344754", width=1)
+        for step in (-0.5, 0.0, 0.5):
+            c.create_line(*project((step, -1.0, 0.0)), *project((step, 1.0, 0.0)), fill="#243642")
+            c.create_line(*project((-1.0, step, 0.0)), *project((1.0, step, 0.0)), fill="#243642")
+
+        origin = project((0.0, 0.0, 0.0))
+        axes = (
+            ((1.08, 0.0, 0.0), "RIGHT", "#f85149", "w"),
+            ((0.0, 1.08, 0.0), "FORWARD", "#3fb950", "e"),
+            ((0.0, 0.0, 1.08), "UP", "#58a6ff", "n"),
+        )
+        for vector, label, color, anchor in axes:
+            endpoint = project(vector)
+            c.create_line(origin[0], origin[1], endpoint[0], endpoint[1], fill=color, width=2, arrow="last")
+            c.create_text(endpoint[0], endpoint[1], text=label, fill=color, anchor=anchor, font=("Helvetica", 9, "bold"))
+
+        status_x = w * 0.76
+        if result is None or result.direction_vector is None:
+            c.create_text(status_x, h * 0.38, text="WAITING", fill=UNKNOWN_AMBER, font=("Helvetica", 22, "bold"))
+            c.create_text(status_x, h * 0.58, text="ELEVATION UNCERTAIN", fill=FG, font=("Helvetica", 11, "bold"))
+            c.create_text(status_x, h * 0.72, text="No direction arrow", fill=MUTED, font=("Helvetica", 10))
+            return
+
+        vector = result.direction_vector
+        endpoint = project(vector)
+        ground_endpoint = project((vector[0], vector[1], 0.0))
+        c.create_line(origin[0], origin[1], ground_endpoint[0], ground_endpoint[1], fill=UNKNOWN_AMBER, width=2)
+        c.create_line(ground_endpoint[0], ground_endpoint[1], endpoint[0], endpoint[1], fill=UNKNOWN_AMBER, width=2, dash=(5, 4))
+        c.create_line(origin[0], origin[1], endpoint[0], endpoint[1], fill="#7a1f1f", width=10)
+        c.create_line(origin[0], origin[1], endpoint[0], endpoint[1], fill=DRONE_RED, width=6, arrow="last", arrowshape=(18, 22, 8))
+        c.create_oval(origin[0] - 5, origin[1] - 5, origin[0] + 5, origin[1] + 5, fill=FG, outline="")
+
+        elevation = result.elevation_deg
+        vertical = "ABOVE" if elevation > 2.0 else "BELOW" if elevation < -2.0 else "LEVEL"
+        bearing = result.global_angle_deg % 360.0
+        directions = (
+            "FORWARD", "FORWARD RIGHT", "RIGHT", "BACK RIGHT",
+            "BACK", "BACK LEFT", "LEFT", "FORWARD LEFT",
+        )
+        horizontal = directions[int((bearing + 22.5) // 45.0) % 8]
+        c.create_text(status_x, 50, text=vertical, fill=DRONE_RED, font=("Helvetica", 24, "bold"))
+        c.create_text(status_x, 92, text=f"{elevation:+.1f}°", fill=FG, font=("Monospace", 24, "bold"))
+        c.create_text(status_x, 119, text="ELEVATION", fill=MUTED, font=("Helvetica", 9, "bold"))
+        c.create_text(status_x, 158, text=horizontal, fill=ACCENT, font=("Helvetica", 16, "bold"), tags=("direction-value",))
+        c.create_text(status_x, 187, text=f"AZIMUTH {bearing:.1f}°", fill=FG, font=("Monospace", 11, "bold"))
+        c.create_text(status_x, 214, text="Arrow points to the source", fill=MUTED, font=("Helvetica", 9))
 
     def _draw_tactical_map(self, tri, single_doa=None, single_array_id=None):
         c = self.canvas_radar

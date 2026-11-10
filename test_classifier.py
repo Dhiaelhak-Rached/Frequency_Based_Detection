@@ -97,6 +97,7 @@ class ClassifierTest(unittest.TestCase):
                 arr.orientation_deg,
                 self.geo.sample_rate,
                 mount=arr.mount,
+                mic_heights_local=arr.mic_heights_local,
             )
             for arr_id, arr in self.geo.arrays.items()
         }

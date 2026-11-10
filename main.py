@@ -76,6 +76,14 @@ def format_classification(result, classifier, signal_detected=True):
     )
 
 
+def format_elevation(result):
+    if result is None or result.elevation_deg is None:
+        return "Elevation: UNCERTAIN"
+    elevation = result.elevation_deg
+    direction = "ABOVE" if elevation > 2.0 else "BELOW" if elevation < -2.0 else "LEVEL"
+    return f"Elevation: {elevation:+.1f}° ({direction})"
+
+
 def add_classifier_arguments(parser):
     parser.add_argument("--model", default=None, help="custom path to the drone classifier ONNX model")
     parser.add_argument("--no-classifier", action="store_true", help="disable drone classification")
@@ -301,6 +309,7 @@ def cmd_cli(args):
             orientation_deg=arr.orientation_deg,
             sample_rate=geo.sample_rate,
             mount=arr.mount,
+            mic_heights_local=arr.mic_heights_local,
         )
     triangulator = Triangulator(geometry=geo, min_prominence=1.8)
     audio_mgr = MultiDeviceAudioManager(
@@ -372,6 +381,7 @@ def cmd_cli(args):
                 if single_id:
                     single = results[single_id]
                     array_label = "UMA-8" if single_id == "front" else "UMA-16"
+                    elevation_text = f" | {format_elevation(single)}" if single_id == "left" else ""
                     if single.global_angle_deg is not None and (single.prominence >= 1.4 or single.stable):
                         status = f"{array_label} BEARING"
                         if args.require_drone and not drone_confirmed:
@@ -379,7 +389,7 @@ def cmd_cli(args):
                         print(
                             f"[{status}] {single.global_angle_deg:5.1f}° | "
                             f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                            f"Direction only | {class_text}",
+                            f"Direction only{elevation_text} | {class_text}",
                             flush=True,
                         )
                     elif single.error == "spatial_aliasing":
@@ -459,6 +469,7 @@ def cmd_simulate(args):
             arr.orientation_deg,
             geo.sample_rate,
             mount=arr.mount,
+            mic_heights_local=arr.mic_heights_local,
         )
         for arr_id, arr in geo.arrays.items()
     }

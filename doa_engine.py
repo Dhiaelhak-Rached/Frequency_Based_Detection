@@ -25,6 +25,11 @@ class DOAResult:
     spectrum: Optional[np.ndarray]
     error: Optional[str] = None
     stable: bool = False
+    elevation_deg: Optional[float] = None
+    elevation_prominence: float = 0.0
+    elevation_confidence: float = 0.0
+    elevation_stable: bool = False
+    direction_vector: Optional[np.ndarray] = None
 
 
 class CircularTracker:
@@ -83,6 +88,56 @@ class CircularTracker:
         self.estimates.clear()
 
 
+class ElevationTracker:
+    def __init__(
+        self,
+        window: int = 5,
+        min_prominence: float = 0.45,
+        decay: float = 0.75,
+        jump_deg: float = 40.0,
+        min_samples: int = 3,
+    ):
+        self.window = window
+        self.min_prominence = min_prominence
+        self.decay = decay
+        self.jump_deg = jump_deg
+        self.min_samples = min_samples
+        self.estimates = deque(maxlen=window)
+
+    def add(self, angle_deg: Optional[float], prominence: float):
+        if angle_deg is None or prominence < self.min_prominence:
+            return
+        current = self.angle
+        if current is not None and abs(angle_deg - current) > self.jump_deg:
+            self.estimates.clear()
+        self.estimates.append(float(angle_deg))
+
+    @property
+    def ready(self) -> bool:
+        return len(self.estimates) >= min(self.window, max(1, self.min_samples))
+
+    @property
+    def angle(self) -> Optional[float]:
+        if not self.estimates:
+            return None
+        values = np.asarray(self.estimates)
+        weights = self.decay ** np.arange(len(values) - 1, -1, -1)
+        return float(np.sum(values * weights) / np.sum(weights))
+
+    @property
+    def confidence(self) -> float:
+        if not self.estimates:
+            return 0.0
+        values = np.asarray(self.estimates)
+        weights = self.decay ** np.arange(len(values) - 1, -1, -1)
+        mean = np.sum(values * weights) / np.sum(weights)
+        std = np.sqrt(np.sum(weights * (values - mean) ** 2) / np.sum(weights))
+        return float(np.clip(1.0 - std / 45.0, 0.0, 1.0))
+
+    def reset(self):
+        self.estimates.clear()
+
+
 class ArrayDOA:
     """SRP-PHAT DOA estimator for an individual array with frequency-bin gating."""
 
@@ -97,9 +152,11 @@ class ArrayDOA:
         freq_hi: float = 16000.0,
         channel_delays: Optional[Dict[int, float]] = None,
         mount: str = "flat",
+        mic_heights_local: Optional[Dict[int, float]] = None,
     ):
         self.array_id = array_id
         self.mic_positions = mic_positions_local
+        self.mic_heights = mic_heights_local or {}
         self.orientation_deg = orientation_deg
         self.sample_rate = sample_rate
         self.grid_deg = grid_deg
@@ -141,6 +198,14 @@ class ArrayDOA:
             self.tracker = CircularTracker(window=5, min_prominence=0.45, min_samples=3)
         else:
             self.tracker = CircularTracker(window=5, min_prominence=2.0)
+        self.elevation_tracker = ElevationTracker()
+        heights = np.array([self.mic_heights.get(ch, 0.0) for ch in self.channels])
+        self.elevation_enabled = (
+            self.mount == "vertical"
+            and all(ch in self.mic_heights for ch in self.channels)
+            and len(np.unique(np.round(heights, decimals=9))) >= 2
+        )
+        self.elevation_angles = np.arange(-90.0, 90.0 + grid_deg, grid_deg)
 
     def _build_steering(self, n_fft: int):
         freqs = np.fft.rfftfreq(n_fft, 1.0 / self.sample_rate)
@@ -168,6 +233,35 @@ class ArrayDOA:
         ).astype(np.complex64)
         return self._steer
 
+    def _estimate_elevation(self, A, frequencies, weights, steer_sel, peak_idx):
+        aligned = A * steer_sel[:, :, peak_idx]
+        heights = np.array([self.mic_heights[ch] for ch in self.channels])
+        row_heights = np.unique(np.round(heights, decimals=9))
+        row_spectra = []
+        for height in row_heights:
+            members = np.flatnonzero(np.isclose(heights, height))
+            row_spectra.append(np.mean(aligned[:, members], axis=1))
+        rows = np.stack(row_spectra, axis=1)
+        rows = rows / (np.abs(rows) + 1e-12)
+
+        elevation_rad = np.deg2rad(self.elevation_angles)
+        tau = -(row_heights[:, None] * np.sin(elevation_rad)[None, :]) / SOUND_SPEED
+        steer = np.exp(
+            2j * np.pi * frequencies[:, None, None] * tau[None, :, :]
+        ).astype(np.complex64)
+        response = np.einsum("kr,kre->ke", rows, steer)
+        power = (weights[:, None] * np.abs(response) ** 2).sum(axis=0)
+        peak_idx = int(np.argmax(power))
+        frac = 0.0
+        if 0 < peak_idx < len(self.elevation_angles) - 1:
+            y0, y1, y2 = power[peak_idx - 1:peak_idx + 2]
+            denom = y0 - 2 * y1 + y2
+            if denom < 0:
+                frac = float(np.clip(0.5 * (y0 - y2) / denom, -0.5, 0.5))
+        elevation = float(self.elevation_angles[peak_idx] + frac * self.grid_deg)
+        prominence = float((power.max() - np.median(power)) / (np.std(power) + 1e-12))
+        return elevation, prominence
+
     def estimate(
         self,
         block: np.ndarray,
@@ -178,9 +272,11 @@ class ArrayDOA:
         """Estimate DOA. Fully controlled by GUI band [low, high] or specific target_freq."""
         if target_freq is not None and target_freq > self.max_direction_freq_hz:
             self.tracker.reset()
+            self.elevation_tracker.reset()
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
         if target_freq is None and band is not None and band[0] > self.max_direction_freq_hz:
             self.tracker.reset()
+            self.elevation_tracker.reset()
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
 
         # Dynamically adapt frequency band from GUI band or detected target_freq
@@ -274,6 +370,40 @@ class ArrayDOA:
         # Global bearing (relative to rig nose / +Y)
         global_angle = (smooth_local + self.orientation_deg) % 360.0
 
+        elevation = None
+        elevation_prominence = 0.0
+        elevation_confidence = 0.0
+        elevation_stable = False
+        direction_vector = None
+        if self.elevation_enabled:
+            raw_elevation, elevation_prominence = self._estimate_elevation(
+                A,
+                fb[keep],
+                w,
+                steer_sel,
+                peak_idx,
+            )
+            self.elevation_tracker.add(raw_elevation, elevation_prominence)
+            smooth_elevation = (
+                self.elevation_tracker.angle
+                if self.elevation_tracker.ready
+                else raw_elevation
+            )
+            elevation_confidence = (
+                self.elevation_tracker.confidence if self.elevation_tracker.ready else 0.5
+            )
+            elevation_stable = self.elevation_tracker.ready and elevation_confidence >= 0.85
+            if elevation_prominence >= 1.4 or elevation_stable:
+                elevation = float(smooth_elevation)
+                azimuth_rad = np.deg2rad(global_angle)
+                elevation_rad = np.deg2rad(elevation)
+                horizontal = np.cos(elevation_rad)
+                direction_vector = np.array([
+                    horizontal * np.sin(azimuth_rad),
+                    horizontal * np.cos(azimuth_rad),
+                    np.sin(elevation_rad),
+                ])
+
         return DOAResult(
             array_id=self.array_id,
             local_angle_deg=float(smooth_local),
@@ -282,7 +412,13 @@ class ArrayDOA:
             confidence=confidence,
             spectrum=p,
             stable=stable,
+            elevation_deg=elevation,
+            elevation_prominence=elevation_prominence,
+            elevation_confidence=elevation_confidence,
+            elevation_stable=elevation_stable,
+            direction_vector=direction_vector,
         )
 
     def reset(self):
         self.tracker.reset()
+        self.elevation_tracker.reset()

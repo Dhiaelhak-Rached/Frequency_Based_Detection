@@ -29,6 +29,7 @@ class ArrayGeometry:
     orientation_deg: float  # flat rotation, or acoustic-face normal when vertical (deg)
     local_mics: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [lx, ly] in local array frame
     mic_positions: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [gx, gy] in global coords
+    mic_heights_local: Dict[int, float] = field(default_factory=dict)
     mount: str = "flat"
 
 
@@ -131,12 +132,14 @@ class RigGeometry:
 
             mics_local = {}
             mics_global = {}
+            mic_heights_local = {}
             for ch, (row, col) in uma16_mic_layout.items():
                 if ch not in active_channels:
                     continue
                 column_offset = (col - 1.5) * grid_m
                 if mount == "vertical":
                     grid_local = np.array([0.0, column_offset])
+                    mic_heights_local[ch] = (1.5 - row) * grid_m
                 else:
                     grid_local = np.array([(1.5 - row) * grid_m, column_offset])
                 mics_local[ch] = grid_local - center_offset
@@ -150,6 +153,7 @@ class RigGeometry:
                 orientation_deg=rot_deg,
                 local_mics=mics_local,
                 mic_positions=mics_global,
+                mic_heights_local=mic_heights_local,
                 mount=mount,
             )
 
