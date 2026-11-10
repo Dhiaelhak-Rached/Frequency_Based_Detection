@@ -128,6 +128,32 @@ class VerticalArrayTest(unittest.TestCase):
         self.assertEqual(geo.local_to_global_bearing("front", 0.0), 0.0)
         self.assertEqual(geo.local_to_global_bearing("left", 0.0), 270.0)
 
+    def test_uma16_front_only_geometry_and_restore(self):
+        geo = RigGeometry()
+        original_center = geo.arrays["left"].center.copy()
+        original_positions = {
+            ch: pos.copy() for ch, pos in geo.arrays["left"].mic_positions.items()
+        }
+
+        geo.set_uma16_front_only(True)
+        arr = geo.arrays["left"]
+        np.testing.assert_allclose(arr.center, [0.0, 0.0])
+        self.assertEqual(arr.orientation_deg, 0.0)
+        self.assertEqual(arr.name, "UMA-16 Front")
+        self.assertEqual(geo.local_to_global_bearing("left", 0.0), 0.0)
+
+        block = vertical_uma16_block(arr, 0.042, 30.0, 15.0, seed=130)
+        result = estimate(arr, block)
+        self.assertLessEqual(angle_error(result.global_angle_deg, 30.0), 5.0)
+
+        geo.set_uma16_front_only(False)
+        restored = geo.arrays["left"]
+        np.testing.assert_allclose(restored.center, original_center)
+        self.assertEqual(restored.orientation_deg, 270.0)
+        self.assertEqual(restored.name, "UMA-16 Left")
+        for ch, pos in original_positions.items():
+            np.testing.assert_allclose(restored.mic_positions[ch], pos)
+
     def test_vertical_grid_boundary_and_alias_limit(self):
         geo = RigGeometry()
         arr = geo.arrays["left"]

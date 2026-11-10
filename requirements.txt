@@ -1,0 +1,7 @@
+numpy
+scipy
+sounddevice
+onnxruntime
+ultralytics
+opencv-python
+Pillow

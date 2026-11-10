@@ -153,6 +153,37 @@ class RigGeometry:
                 mount=mount,
             )
 
+    def set_uma16_front_only(self, enabled: bool):
+        """Place the left UMA-16 at the forward rig origin, or restore its normal position."""
+        arr = self.arrays.get("left")
+        if arr is None:
+            raise ValueError("UMA-16 front-only mode requires the left UMA-16 configuration")
+
+        original = getattr(self, "_uma16_front_original", None)
+        if original is None:
+            original = (
+                arr.center.copy(),
+                arr.orientation_deg,
+                arr.name,
+                {ch: pos.copy() for ch, pos in arr.mic_positions.items()},
+            )
+            self._uma16_front_original = original
+
+        if enabled:
+            arr.center = np.zeros(2, dtype=float)
+            arr.orientation_deg = 0.0
+            arr.name = "UMA-16 Front"
+            arr.mic_positions = {
+                ch: np.array([pos[1], pos[0]], dtype=float)
+                for ch, pos in arr.local_mics.items()
+            }
+        else:
+            center, orientation, name, mic_positions = original
+            arr.center = center.copy()
+            arr.orientation_deg = orientation
+            arr.name = name
+            arr.mic_positions = {ch: pos.copy() for ch, pos in mic_positions.items()}
+
     def local_to_global_bearing(self, array_id: str, local_bearing_deg: float) -> float:
         """Convert local array bearing angle to global rig bearing (0 deg = forward)."""
         if array_id not in self.arrays:

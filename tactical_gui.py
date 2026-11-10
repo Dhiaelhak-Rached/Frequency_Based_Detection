@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""2D Tactical Radar GUI for frequency-locked dual-array acoustic triangulation.
+"""Tactical GUI for acoustic tracking and independent YOLO camera detection.
 
-Displays real-time FFT spectrum, live drone telemetry, and a top-down 2D
-tactical map plotting the physical rig and one validated bearing to the
-triangulated (X, Y) target position.
+Displays the real-time FFT spectrum, selectable-camera annotated video, drone
+telemetry, and the top-down acoustic bearing or triangulated target position.
 """
 
 import json
-from pathlib import Path
+import time
 import tkinter as tk
 from tkinter import ttk
 from typing import Dict
 
 import numpy as np
+from PIL import Image, ImageTk
 
 from geometry import RigGeometry
-from detector import FrequencyDetector
+from vision_detector import discover_cameras, normalize_camera_source, validate_horizontal_fov
+from detector import DetectionResult, FrequencyDetector
 from doa_engine import ArrayDOA
-from triangulation import Triangulator
+from triangulation import TriangulationResult, Triangulator
 from audio_manager import MultiDeviceAudioManager
 
 # Color Palette
@@ -29,6 +30,8 @@ MUTED = "#8b949e"
 ACCENT = "#58a6ff"
 WARN = "#f85149"
 OK = "#3fb950"
+DRONE_RED = "#ff4444"
+UNKNOWN_AMBER = "#e3b341"
 RAY_FRONT = "#3fb950"  # Green
 RAY_LEFT = "#58a6ff"   # Blue
 RAY_RIGHT = "#d29922"  # Orange
@@ -36,15 +39,35 @@ GRID_COLOR = "#212b36"
 
 
 class TacticalGUI:
-    def __init__(self, root: tk.Tk, geometry: RigGeometry, simulate: bool = False):
+    def __init__(
+        self,
+        root: tk.Tk,
+        geometry: RigGeometry,
+        simulate: bool = False,
+        classifier=None,
+        require_drone: bool = False,
+        vision=None,
+    ):
         self.root = root
         self.geo = geometry
         self.simulate = simulate
+        self.classifier = classifier
+        self.vision = vision
+        self.vision_result = None
+        self.camera_photo = None
+        self.classification = None
+        self.signal_detected = False
+        self.classifier_hop = max(
+            0.05,
+            float(geometry.cfg.get("classifier", {}).get("hop_seconds", 0.2)),
+        )
+        self.last_classification = 0.0
+        self.require_drone = require_drone
 
-        root.title("Acoustic Drone Tactical Radar — Dual-Array Triangulation")
+        root.title("Acoustic + Camera Drone Tactical Radar")
         root.configure(bg=BG)
-        root.geometry("1180x760")
-        root.minsize(950, 650)
+        root.geometry("1360x860")
+        root.minsize(1100, 740)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # Core Engines
@@ -78,6 +101,8 @@ class TacticalGUI:
         self.map_center_offset_y = 220  # offset origin downwards on canvas
 
         self._build_ui()
+        if self.vision is not None and self.var_vision_enabled.get():
+            self.vision.start()
         self.root.after(100, self._update_loop)
 
     def _build_ui(self):
@@ -99,6 +124,16 @@ class TacticalGUI:
         # Telemetry metrics
         self.lbl_freq = self._create_metric(top_frame, "DETECTED FREQ", "---.- Hz")
         self.lbl_level = self._create_metric(top_frame, "SIGNAL LEVEL", "---.- dBFS")
+        self.lbl_classification = self._create_metric(
+            top_frame,
+            "CLASSIFICATION",
+            "STANDBY" if self.classifier is not None else "OFF",
+        )
+        self.lbl_vision = self._create_metric(
+            top_frame,
+            "CAMERA",
+            "CONNECTING" if self.vision is not None else "OFF",
+        )
         self.lbl_range = self._create_metric(top_frame, "RANGE", "-.-- m")
         self.lbl_bearing = self._create_metric(top_frame, "BEARING", "---.-°")
         self.lbl_coords = self._create_metric(top_frame, "COORDINATES (X, Y)", "X: -.--  Y: -.--")
@@ -107,12 +142,26 @@ class TacticalGUI:
         body = tk.Frame(self.root, bg=BG)
         body.pack(fill="both", expand=True, padx=10, pady=4)
 
-        # Left: Spectrum Canvas
-        spec_frame = tk.LabelFrame(body, text=" Real-Time Spectrum (Narrowband Filter) ", bg=BG, fg=FG,
+        left_visual = tk.Frame(body, bg=BG)
+        left_visual.pack(side="left", fill="both", expand=False, padx=(0, 6))
+        spec_frame = tk.LabelFrame(left_visual, text=" Real-Time Spectrum (Narrowband Filter) ", bg=BG, fg=FG,
                                    font=("Helvetica", 10, "bold"), highlightbackground=BORDER)
-        spec_frame.pack(side="left", fill="both", expand=False, padx=(0, 6))
-        self.canvas_spec = tk.Canvas(spec_frame, width=380, height=480, bg="#0d1117", highlightthickness=0)
+        spec_frame.pack(side="top", fill="both", expand=True)
+        self.canvas_spec = tk.Canvas(spec_frame, width=400, height=300, bg="#0d1117", highlightthickness=0)
         self.canvas_spec.pack(fill="both", expand=True, padx=4, pady=4)
+
+        camera_frame = tk.LabelFrame(left_visual, text=" YOLO Camera Detection ", bg=BG, fg=FG,
+                                     font=("Helvetica", 10, "bold"), highlightbackground=BORDER)
+        camera_frame.pack(side="bottom", fill="both", expand=False, pady=(6, 0))
+        self.camera_video_lbl = tk.Label(
+            camera_frame,
+            text="NO CAMERA FRAME",
+            width=48,
+            height=11,
+            bg="#0d1117",
+            fg=MUTED,
+        )
+        self.camera_video_lbl.pack(fill="both", expand=True, padx=4, pady=4)
 
         # Right: 2D Tactical Radar Canvas
         radar_frame = tk.LabelFrame(body, text=" 2D Tactical Spatial Map (Top-Down Triangulation) ", bg=BG, fg=FG,
@@ -141,6 +190,65 @@ class TacticalGUI:
         self.var_dev_left = tk.StringVar(value=default_left)
         tk.Entry(dev_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left")
 
+        camera_row = tk.Frame(ctrl, bg=PANEL)
+        camera_row.pack(fill="x", padx=8, pady=(4, 2))
+        self.var_vision_enabled = tk.BooleanVar(value=self.vision is not None)
+        tk.Checkbutton(
+            camera_row,
+            text="Camera Detection",
+            variable=self.var_vision_enabled,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+            command=self.on_toggle_vision,
+            state="normal" if self.vision is not None else "disabled",
+        ).pack(side="left", padx=(4, 8))
+        tk.Label(camera_row, text="Camera:", bg=PANEL, fg=ACCENT).pack(side="left", padx=(4, 2))
+        self.var_camera = tk.StringVar(value=str(self.vision.camera) if self.vision is not None else "")
+        self.camera_combo = ttk.Combobox(
+            camera_row,
+            textvariable=self.var_camera,
+            values=self._camera_sources(),
+            width=46,
+            state="normal" if self.vision is not None else "disabled",
+        )
+        self.camera_combo.pack(side="left", padx=4)
+        self.camera_combo.bind("<<ComboboxSelected>>", self.on_camera_selected)
+        self.camera_combo.bind("<Return>", self.on_camera_selected)
+        tk.Label(camera_row, text="HFOV °:", bg=PANEL, fg=ACCENT).pack(side="left", padx=(8, 2))
+        initial_fov = self.vision.horizontal_fov_deg if self.vision is not None else None
+        self.var_camera_fov = tk.StringVar(value="" if initial_fov is None else f"{initial_fov:g}")
+        self.camera_fov_entry = tk.Entry(
+            camera_row,
+            textvariable=self.var_camera_fov,
+            width=6,
+            bg="#0d1117",
+            fg=FG,
+            insertbackground=FG,
+            state="normal" if self.vision is not None else "disabled",
+        )
+        self.camera_fov_entry.pack(side="left")
+        self.camera_fov_entry.bind("<Return>", lambda event: self.on_apply_fov())
+        tk.Button(
+            camera_row,
+            text="Apply FOV",
+            command=self.on_apply_fov,
+            bg="#21262d",
+            fg=ACCENT,
+            relief="flat",
+            state="normal" if self.vision is not None else "disabled",
+        ).pack(side="left", padx=4)
+        tk.Button(
+            camera_row,
+            text="Refresh",
+            command=self.on_refresh_cameras,
+            bg="#21262d",
+            fg=ACCENT,
+            relief="flat",
+            state="normal" if self.vision is not None else "disabled",
+        ).pack(side="left", padx=4)
 
         # Bottom row of controls: Filter settings & Action buttons
         act_row = tk.Frame(ctrl, bg=PANEL)
@@ -219,6 +327,40 @@ class TacticalGUI:
         self.slider_zoom.set(int(self.map_scale))
         self.slider_zoom.pack(side="right", padx=4)
 
+        classifier_row = tk.Frame(ctrl, bg=PANEL)
+        classifier_row.pack(fill="x", padx=8, pady=(0, 6))
+        self.classifier_status_lbl = tk.Label(
+            classifier_row,
+            text="CLASSIFIER ACTIVE" if self.classifier is not None else "CLASSIFIER OFF",
+            font=("Helvetica", 9, "bold"),
+            bg=PANEL,
+            fg=OK if self.classifier is not None else MUTED,
+        )
+        self.classifier_status_lbl.pack(side="left", padx=(4, 14))
+        self.var_require_drone = tk.BooleanVar(value=self.require_drone)
+        tk.Checkbutton(
+            classifier_row,
+            text="Require Drone ID for Lock",
+            variable=self.var_require_drone,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(side="left")
+        self.var_uma16_front_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            classifier_row,
+            text="UMA-16 Front Only",
+            variable=self.var_uma16_front_only,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+            command=lambda: self.on_array_mode_change("uma16_front"),
+        ).pack(side="left", padx=(14, 4))
+
     def _create_metric(self, parent: tk.Frame, title: str, init_val: str) -> tk.Label:
         box = tk.Frame(parent, bg=PANEL)
         box.pack(side="left", padx=12, pady=4)
@@ -227,12 +369,120 @@ class TacticalGUI:
         val_lbl.pack(anchor="w")
         return val_lbl
 
+    def _camera_sources(self):
+        try:
+            sources = [device.source for device in discover_cameras()]
+        except Exception:
+            sources = []
+        current = str(self.vision.camera) if self.vision is not None else ""
+        if current and current not in sources:
+            sources.insert(0, current)
+        return sources
+
+    def on_refresh_cameras(self):
+        self.camera_combo.configure(values=self._camera_sources())
+
+    def on_camera_selected(self, event=None):
+        if self.vision is None:
+            return
+        source = self.var_camera.get().strip()
+        if not source:
+            return
+        if source != str(self.vision.camera):
+            self.vision.set_camera(source)
+            key = str(normalize_camera_source(source))
+            saved_fov = self.geo.cfg.get("vision", {}).get("camera_fovs", {}).get(key)
+            self.vision.set_horizontal_fov(saved_fov)
+            self.var_camera_fov.set("" if saved_fov is None else f"{float(saved_fov):g}")
+            self.vision_result = None
+        self.save_config()
+        self._update_vision()
+
+    def on_apply_fov(self):
+        if self.vision is None:
+            return
+        try:
+            fov = validate_horizontal_fov(self.var_camera_fov.get())
+        except (TypeError, ValueError):
+            self.lbl_vision.configure(text="INVALID FOV", fg=WARN)
+            return
+        self.vision.set_horizontal_fov(fov)
+        key = str(normalize_camera_source(self.vision.camera))
+        vision_cfg = self.geo.cfg.setdefault("vision", {})
+        vision_cfg.setdefault("camera_fovs", {})[key] = fov
+        vision_cfg["horizontal_fov_deg"] = fov
+        self.save_config()
+        self._update_vision()
+
+    def on_toggle_vision(self):
+        if self.vision is None:
+            return
+        if self.var_vision_enabled.get():
+            self.on_camera_selected()
+            self.vision.start()
+        else:
+            self.vision.stop()
+            self.vision_result = None
+        self._update_vision()
+
+    def _update_vision(self):
+        if self.vision is None or not self.var_vision_enabled.get():
+            self.lbl_vision.configure(text="OFF", fg=MUTED)
+            self.camera_photo = None
+            self.camera_video_lbl.configure(image="", text="CAMERA OFF")
+            return
+
+        result = self.vision.get_result()
+        self.vision_result = result
+        if result.error:
+            self.lbl_vision.configure(text="OFFLINE", fg=WARN)
+        elif result.timestamp == 0.0:
+            self.lbl_vision.configure(text="CONNECTING", fg=MUTED)
+        elif result.target is not None and result.direction is not None:
+            self.lbl_vision.configure(
+                text=f"DRONE {result.best_confidence:.0%} @ {result.direction.global_bearing_deg:.1f}°",
+                fg=DRONE_RED,
+            )
+        elif result.target is not None:
+            self.lbl_vision.configure(text=f"DRONE {result.best_confidence:.0%} NO FOV", fg=DRONE_RED)
+        elif result.detections:
+            self.lbl_vision.configure(text=f"ACQUIRING {result.best_confidence:.0%}", fg=UNKNOWN_AMBER)
+        else:
+            self.lbl_vision.configure(text="CLEAR", fg=OK)
+
+        if result.frame is None:
+            self.camera_photo = None
+            text = result.error or "CONNECTING TO CAMERA..."
+            self.camera_video_lbl.configure(image="", text=text, width=48, height=11)
+            return
+
+        rgb = np.ascontiguousarray(result.frame[:, :, ::-1])
+        image = Image.fromarray(rgb)
+        width = max(320, self.camera_video_lbl.winfo_width())
+        image.thumbnail((width, 240))
+        self.camera_photo = ImageTk.PhotoImage(image=image)
+        self.camera_video_lbl.configure(
+            image=self.camera_photo,
+            text="",
+            width=image.width,
+            height=image.height,
+        )
+
     def on_zoom_change(self, val):
         self.map_scale = float(val)
+
+    def _reset_classifier(self):
+        if self.classifier is not None:
+            self.classifier.reset()
+        self.classification = None
+        self.signal_detected = False
+        self.last_classification = 0.0
 
     def on_toggle_sim(self):
         self.simulate = self.var_sim.get()
         self.audio_mgr.simulate = self.simulate
+        self._reset_classifier()
+        self._update_classification_metric()
         if self.simulate:
             self.status_lbl.configure(text="SIMULATION ACTIVE", fg=OK)
         else:
@@ -247,16 +497,34 @@ class TacticalGUI:
     def _selected_array_ids(self):
         if self.var_front_only.get():
             return ["front"]
-        if self.var_left_only.get():
+        if self.var_left_only.get() or self.var_uma16_front_only.get():
             return ["left"]
         return list(self.geo.arrays)
 
     def on_array_mode_change(self, selected):
         if selected == "front" and self.var_front_only.get():
             self.var_left_only.set(False)
+            self.var_uma16_front_only.set(False)
         elif selected == "left" and self.var_left_only.get():
             self.var_front_only.set(False)
+            self.var_uma16_front_only.set(False)
+        elif selected == "uma16_front" and self.var_uma16_front_only.get():
+            self.var_front_only.set(False)
+            self.var_left_only.set(False)
+
+        self.geo.set_uma16_front_only(self.var_uma16_front_only.get())
+        arr = self.geo.arrays["left"]
+        self.doa_engines["left"] = ArrayDOA(
+            array_id="left",
+            mic_positions_local=arr.local_mics,
+            orientation_deg=arr.orientation_deg,
+            sample_rate=self.geo.sample_rate,
+            mount=arr.mount,
+            freq_lo=200.0,
+            freq_hi=16000.0,
+        )
         self._clear_target_telemetry()
+        self._reset_classifier()
         for doa_eng in self.doa_engines.values():
             doa_eng.reset()
         self.audio_mgr.enabled_arrays = set(self._selected_array_ids())
@@ -276,14 +544,18 @@ class TacticalGUI:
                 return
 
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
+            self._reset_classifier()
             self.save_config()
             self.audio_mgr.start(device_map=self._device_map(), array_ids=self._selected_array_ids())
             self.is_active = True
+            self._update_classification_metric()
             self.btn_toggle.configure(text="STOP", bg=WARN, activebackground="#da3633")
             self.status_lbl.configure(text="SEARCHING...", fg=ACCENT)
         else:
             self.audio_mgr.stop()
             self.is_active = False
+            self._reset_classifier()
+            self._update_classification_metric()
             self.btn_toggle.configure(text="START LISTENING", bg="#238636", activebackground="#2ea043")
             self.status_lbl.configure(text="STANDBY", fg=MUTED)
 
@@ -309,12 +581,15 @@ class TacticalGUI:
                 self.geo.cfg["arrays"]["front"]["device_index"] = int(self.var_dev_front.get().strip())
             if "left" in self.geo.cfg.get("arrays", {}):
                 self.geo.cfg["arrays"]["left"]["device_index"] = int(self.var_dev_left.get().strip())
+            if self.vision is not None:
+                self.geo.cfg.setdefault("vision", {})["camera"] = self.var_camera.get().strip()
             with open(self.geo.config_path, "w") as f:
                 json.dump(self.geo.cfg, f, indent=2)
         except Exception:
             pass
 
     def _update_loop(self):
+        self._update_vision()
         if self.is_active or self.simulate:
             self._process_frame()
         self.root.after(100, self._update_loop)
@@ -328,12 +603,25 @@ class TacticalGUI:
 
         blocks = self.audio_mgr.get_latest_blocks()
         if not blocks:
+            self._reset_classifier()
+            self._update_classification_metric()
+            self._clear_target_telemetry()
+            self.status_lbl.configure(text="WAITING FOR AUDIO INPUT", fg=WARN, bg="#2b2010")
             return
 
         # 1. Frequency Detection (on front array ch0 or first available block)
         det_block = blocks.get("front", next(iter(blocks.values())))
         det_ch = det_block[:, 0]
         det_res = self.detector.process(det_ch, low, high)
+        self.signal_detected = det_res.detected
+
+        now = time.monotonic()
+        if not det_res.detected:
+            self._reset_classifier()
+        elif self.classifier is not None and now - self.last_classification >= self.classifier_hop:
+            self.classification = self.classifier.classify(det_ch)
+            self.last_classification = now
+        self._update_classification_metric()
 
         # 2. Narrowband DOA for each selected array
         bearings = {}
@@ -367,12 +655,52 @@ class TacticalGUI:
         self._draw_spectrum(det_res)
         self._draw_tactical_map(tri_res, single_doa if det_res.detected else None, single_array_id)
 
+    def _update_classification_metric(self):
+        result = self.classification
+        if self.classifier is None:
+            self.lbl_classification.configure(text="OFF", fg=MUTED)
+        elif not self.is_active and not self.simulate:
+            self.lbl_classification.configure(text="STANDBY", fg=MUTED)
+        elif not self.signal_detected:
+            self.lbl_classification.configure(text="NO TARGET SIGNAL", fg=MUTED)
+        elif result is None or not result.is_ready:
+            self.lbl_classification.configure(text="BUFFERING", fg=MUTED)
+        elif result.is_drone:
+            self.lbl_classification.configure(
+                text=f"DRONE ({result.probability:.0%}) [{result.decision_votes}/{result.vote_window}]",
+                fg=DRONE_RED,
+            )
+        elif result.probability >= result.threshold:
+            self.lbl_classification.configure(
+                text=f"CANDIDATE ({result.probability:.0%}) [{result.decision_votes}/{result.vote_window}]",
+                fg=UNKNOWN_AMBER,
+            )
+        else:
+            self.lbl_classification.configure(
+                text=f"CLEAR ({result.probability:.0%}) [{result.decision_votes}/{result.vote_window}]",
+                fg=OK,
+            )
+
+    def _drone_confirmed(self):
+        return (
+            self.signal_detected
+            and self.classification is not None
+            and self.classification.is_drone
+        )
+
     def _clear_target_telemetry(self):
         self.lbl_range.configure(text="-.-- m", fg=MUTED)
         self.lbl_bearing.configure(text="---.-°", fg=MUTED)
         self.lbl_coords.configure(text="X: -.--  Y: -.--", fg=MUTED)
 
-    def _update_telemetry(self, det: FrequencyDetector, tri: Triangulator, doa_errors=None, single_doa=None, single_array_id=None):
+    def _update_telemetry(
+        self,
+        det: DetectionResult,
+        tri: TriangulationResult,
+        doa_errors=None,
+        single_doa=None,
+        single_array_id=None,
+    ):
         if det.peak_freq is not None:
             self.lbl_freq.configure(text=f"{det.peak_freq:6.1f} Hz", fg=WARN if det.detected else FG)
         else:
@@ -381,12 +709,28 @@ class TacticalGUI:
         if det.peak_db is not None:
             self.lbl_level.configure(text=f"{det.peak_db:5.1f} dBFS", fg=WARN if det.detected else FG)
 
+        drone_confirmed = self._drone_confirmed()
+        require_drone = self.var_require_drone.get()
         if single_doa is not None:
-            array_label = "UMA-8" if single_array_id == "front" else "UMA-16"
+            if single_array_id == "front":
+                array_label = "UMA-8"
+            elif self.var_uma16_front_only.get():
+                array_label = "UMA-16 FRONT"
+            else:
+                array_label = "UMA-16"
             if det.detected and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
-                self.status_lbl.configure(text=f"{array_label} ONLY / BEARING LOCK", fg=OK, bg="#1a2733")
+                if require_drone and not drone_confirmed:
+                    status = f"{array_label} BEARING / DRONE ID REQUIRED"
+                    color = UNKNOWN_AMBER
+                elif drone_confirmed:
+                    status = f"{array_label} BEARING LOCK - DRONE CONFIRMED"
+                    color = DRONE_RED
+                else:
+                    status = f"{array_label} ONLY / BEARING LOCK"
+                    color = OK
+                self.status_lbl.configure(text=status, fg=color, bg="#1a2733")
                 self.lbl_range.configure(text="-.-- m", fg=MUTED)
-                self.lbl_bearing.configure(text=f"{single_doa.global_angle_deg:5.1f}°", fg=OK)
+                self.lbl_bearing.configure(text=f"{single_doa.global_angle_deg:5.1f}°", fg=color)
                 self.lbl_coords.configure(text="DIRECTION ONLY", fg=MUTED)
             elif det.detected:
                 if single_doa.error == "spatial_aliasing":
@@ -403,10 +747,17 @@ class TacticalGUI:
 
         if det.detected:
             if tri.success and tri.x is not None and tri.y is not None:
-                self.status_lbl.configure(text="TARGET LOCKED", fg=WARN, bg="#3b1d1d")
-                self.lbl_range.configure(text=f"{tri.range_m:4.2f} m", fg=OK)
-                self.lbl_bearing.configure(text=f"{tri.bearing_deg:5.1f}°", fg=OK)
-                self.lbl_coords.configure(text=f"X:{tri.x:+4.2f}m  Y:{tri.y:+4.2f}m", fg=OK)
+                if require_drone and not drone_confirmed:
+                    status = "ACOUSTIC SOURCE / DRONE ID REQUIRED"
+                elif drone_confirmed:
+                    status = "TARGET LOCKED - DRONE CONFIRMED"
+                else:
+                    status = "TARGET LOCKED - UNKNOWN/NON-DRONE"
+                color = DRONE_RED if drone_confirmed else UNKNOWN_AMBER
+                self.status_lbl.configure(text=status, fg=color, bg="#3b1d1d" if drone_confirmed else "#2b2010")
+                self.lbl_range.configure(text=f"{tri.range_m:4.2f} m", fg=color)
+                self.lbl_bearing.configure(text=f"{tri.bearing_deg:5.1f}°", fg=color)
+                self.lbl_coords.configure(text=f"X:{tri.x:+4.2f}m  Y:{tri.y:+4.2f}m", fg=color)
             else:
                 if doa_errors and all(err == "spatial_aliasing" for err in doa_errors.values()):
                     max_safe_freq = min(self.doa_engines[arr_id].max_direction_freq_hz for arr_id in doa_errors)
@@ -525,7 +876,12 @@ class TacticalGUI:
         if single_doa is not None and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
             arr = self.geo.arrays[single_array_id]
             ray_color = RAY_FRONT if single_array_id == "front" else RAY_LEFT
-            array_label = "UMA-8" if single_array_id == "front" else "UMA-16"
+            if single_array_id == "front":
+                array_label = "UMA-8"
+            elif self.var_uma16_front_only.get():
+                array_label = "UMA-16 FRONT"
+            else:
+                array_label = "UMA-16"
             angle = np.deg2rad(single_doa.global_angle_deg)
             origin = to_canvas(*arr.center)
             endpoint = to_canvas(
@@ -538,11 +894,58 @@ class TacticalGUI:
         elif tri.success and tri.x is not None and tri.y is not None:
             tx, ty = to_canvas(tri.x, tri.y)
             origin = to_canvas(0.0, 0.0)
-            c.create_line(origin[0], origin[1], tx, ty, fill=WARN, width=3)
-            c.create_oval(tx - 6, ty - 6, tx + 6, ty + 6, fill=WARN, outline="#ffffff", width=2)
-            c.create_text(tx + 12, ty - 8, text=f"TARGET ({tri.x:+.1f}m, {tri.y:+.1f}m)",
-                          fill=WARN, anchor="w", font=("Helvetica", 9, "bold"))
+            drone_confirmed = self._drone_confirmed()
+            color = DRONE_RED if drone_confirmed else UNKNOWN_AMBER
+            if drone_confirmed:
+                radius = 8.0 + 2.0 * np.sin(time.monotonic() * 6.0)
+                label = f"DRONE ({self.classification.probability:.0%})"
+            elif self.classification is not None and self.classification.is_ready:
+                radius = 6.0
+                label = f"TARGET ({self.classification.probability:.0%})"
+            else:
+                radius = 6.0
+                label = "TARGET (UNKNOWN)"
+            c.create_line(origin[0], origin[1], tx, ty, fill=color, width=3)
+            c.create_oval(tx - radius, ty - radius, tx + radius, ty + radius, fill=color, outline="#ffffff", width=2)
+            c.create_text(
+                tx + 12,
+                ty - 8,
+                text=f"{label} ({tri.x:+.1f}m, {tri.y:+.1f}m)",
+                fill=color,
+                anchor="w",
+                font=("Helvetica", 9, "bold"),
+            )
+
+        visual = self.vision_result
+        if visual is not None and visual.target is not None and visual.direction is not None:
+            direction = visual.direction
+            angle = np.deg2rad(direction.global_bearing_deg)
+            origin = to_canvas(0.0, 0.0)
+            endpoint = to_canvas(4.0 * np.sin(angle), 4.0 * np.cos(angle))
+            c.create_line(
+                origin[0],
+                origin[1],
+                endpoint[0],
+                endpoint[1],
+                fill="#c678dd",
+                width=2,
+                dash=(8, 4),
+                arrow="last",
+            )
+            c.create_text(
+                endpoint[0] + 8,
+                endpoint[1],
+                text=(
+                    f"CAMERA {direction.global_bearing_deg:.1f}° "
+                    f"(EL {direction.elevation_deg:+.1f}°, DIRECTION ONLY)"
+                ),
+                fill="#c678dd",
+                anchor="w",
+                font=("Helvetica", 8, "bold"),
+            )
 
     def on_close(self):
         self.audio_mgr.stop()
+        if self.vision is not None:
+            self.vision.stop()
         self.root.destroy()

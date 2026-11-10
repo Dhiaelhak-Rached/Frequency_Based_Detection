@@ -13,11 +13,37 @@
     "uma16_length_m": 0.126
   },
   "default_detection": {
-    "target_low_hz": 900.0,
+    "target_low_hz": 1000.0,
     "target_high_hz": 1100.0,
-    "threshold_dbfs": -65.0,
+    "threshold_dbfs": -70.0,
     "block_duration": 0.2,
     "average_blocks": 4
+  },
+  "classifier": {
+    "enabled": true,
+    "model_path": "model/mobilenetv2_drone.onnx",
+    "metadata_path": "model/metadata.json",
+    "reference_path": "model/reference_outputs.npz",
+    "threshold": 0.75,
+    "votes_required": 3,
+    "vote_window": 5,
+    "window_seconds": 1.0,
+    "hop_seconds": 0.2
+  },
+  "vision": {
+    "enabled": true,
+    "model_path": "model/Yolo/best.pt",
+    "camera": "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0",
+    "horizontal_fov_deg": 75.0,
+    "camera_fovs": {
+      "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0
+    },
+    "orientation_deg": 0.0,
+    "confidence": 0.5,
+    "inference_hz": 10.0,
+    "max_target_step_px": 120.0,
+    "confirmation_frames": 3,
+    "lost_timeout_s": 0.75
   },
   "arrays": {
     "front": {
@@ -76,7 +102,7 @@
         14,
         15
       ],
-      "device_index": 1,
+      "device_index": 12,
       "device_hint": "5- MCHStreamer",
       "cable": "black USB"
     }

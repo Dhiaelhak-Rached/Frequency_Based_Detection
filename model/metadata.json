@@ -1,0 +1,50 @@
+{
+  "source": "/home/akkurad/Desktop/Private/MobileNetV2",
+  "imported_on": "2026-09-10",
+  "model": "MobileNetV2 audio drone classifier",
+  "sample_rate": 16000,
+  "window_samples": 16000,
+  "hop_samples": 8000,
+  "input": {
+    "name": "waveform",
+    "shape": [
+      1,
+      16000
+    ],
+    "dtype": "float32"
+  },
+  "output": {
+    "name": "probabilities",
+    "shape": [
+      1,
+      2
+    ],
+    "dtype": "float32"
+  },
+  "labels": {
+    "0": "no_drone",
+    "1": "drone"
+  },
+  "frontend": "embedded in ONNX; feed normalized PCM waveform without external features or softmax",
+  "decision": {
+    "threshold": 0.75,
+    "votes_required": 3,
+    "vote_window": 5
+  },
+  "runtime": {
+    "tensorrt": "10.3.0",
+    "gpu": "Orin",
+    "engine": "drone_fp32.engine"
+  },
+  "reference_validation": {
+    "clips": 64,
+    "max_drone_probability_error": 0.0021927952766418457,
+    "threshold_decision_mismatches": 0,
+    "tolerance": 0.01
+  },
+  "sha256": {
+    "drone_fp32.engine": "d6da0aec4d92cd660f07a9cce5f5c69fd33c44dc8f62a603ddec5e30ded6980a",
+    "mobilenetv2_drone.onnx": "934703f1ce2c091e466b963e1b19e4c5eb247a9e7167768e443774ce16f0d6e4",
+    "reference_outputs.npz": "e20035f45a13b4d0151c0fa8fa1c74b59c931fe2d689922943829eb0470f0e78"
+  }
+}

@@ -8,9 +8,11 @@ testing and verification without physical hardware.
 
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import scipy.signal as signal
 import sounddevice as sd
 
 from geometry import RigGeometry, SOUND_SPEED
@@ -24,7 +26,7 @@ def resolve_audio_device(spec: Optional[Union[int, str]], min_channels: int = 1)
     try:
         idx = int(spec)
         info = sd.query_devices(idx)
-        if info["max_input_channels"] > 0:
+        if info["max_input_channels"] >= min_channels:
             return idx
     except (ValueError, TypeError):
         pass
@@ -64,11 +66,30 @@ class MultiDeviceAudioManager:
         self.is_running = False
 
         # Simulation state
-        self.sim_target_pos = np.array([1.2, 2.5], dtype=float)  # x=1.2m, y=2.5m forward
+        self.sim_target_pos = np.array([-1.0, 2.5], dtype=float)  # Shared forward/left field of view
         self.sim_freq_hz = 1000.0
         self.sim_snr_db = 15.0
         self.sim_t0 = time.time()
         self.sim_speed_rad_per_s = 0.3  # orbit speed for moving virtual drone
+        self.sim_drone_wave: Optional[np.ndarray] = None
+        self._load_sim_drone_audio()
+
+    def _load_sim_drone_audio(self):
+        """Preload realistic drone sound from reference outputs for synthetic wavefield."""
+        ref_path = Path(__file__).resolve().parent / "model" / "reference_outputs.npz"
+        if not ref_path.exists():
+            ref_path = Path("/home/dhia/Desktop/projects/MobileNetV2/model/reference_outputs.npz")
+        if ref_path.exists():
+            try:
+                data = np.load(ref_path)
+                labels = data.get("labels", [])
+                drone_indices = np.where(labels == 1)[0]
+                idx = int(drone_indices[0]) if len(drone_indices) > 0 else 0
+                w16 = data["waveforms"][idx]
+                # Resample 16 kHz to rig sample rate (44.1 kHz)
+                self.sim_drone_wave = signal.resample_poly(w16, 441, 160).astype(np.float32)
+            except Exception as e:
+                self.sim_drone_wave = None
 
     def set_simulation_target(
         self,
@@ -200,8 +221,8 @@ class MultiDeviceAudioManager:
         elapsed = now - self.sim_t0
 
         # Optional slow orbit to simulate moving drone
-        orbit_radius = 2.5
-        center_x, center_y = 0.0, 3.0
+        orbit_radius = 0.5
+        center_x, center_y = -1.0, 2.5
         angle = self.sim_speed_rad_per_s * elapsed
         target_pos = np.array([
             center_x + orbit_radius * np.sin(angle),
@@ -229,12 +250,23 @@ class MultiDeviceAudioManager:
                 delay_s = dist / SOUND_SPEED
                 # Inverse-square amplitude scaling + phase shift
                 amp = 0.5 / max(0.5, dist)
-                tone = amp * np.sin(2.0 * np.pi * freq * (t - delay_s))
+                tone = 0.25 * amp * np.sin(2.0 * np.pi * freq * (t - delay_s))
+
+                if self.sim_drone_wave is not None and len(self.sim_drone_wave) > 0:
+                    delay_samples = int(round(delay_s * self.sample_rate))
+                    idx = (int(round(elapsed * self.sample_rate)) + delay_samples) % len(self.sim_drone_wave)
+                    drone_rolled = np.roll(self.sim_drone_wave, -idx)
+                    drone_chunk = drone_rolled[:self.blocksize]
+                    if len(drone_chunk) < self.blocksize:
+                        drone_chunk = np.pad(drone_chunk, (0, self.blocksize - len(drone_chunk)))
+                    sig = tone + 4.0 * amp * drone_chunk
+                else:
+                    sig = tone
 
                 # Additive sensor noise
                 noise_amp = amp * (10.0 ** (-snr / 20.0))
                 noise = np.random.normal(0, noise_amp, self.blocksize)
-                block[:, ch] = tone + noise
+                block[:, ch] = sig + noise
 
             out[arr_id] = block
 

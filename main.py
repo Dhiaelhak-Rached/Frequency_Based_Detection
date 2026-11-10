@@ -13,22 +13,132 @@ Usage:
   python3 main.py simulate
   python3 main.py test-geometry
 
-  # Check connected USB audio hardware:
+  # Check connected USB audio hardware and cameras:
   python3 main.py list-devices
+  python3 main.py list-cameras
 """
 
 import argparse
-import sys
+from pathlib import Path
 import time
 import tkinter as tk
 
 import numpy as np
 
-from geometry import RigGeometry, vector_to_bearing, bearing_to_vector
+from geometry import RigGeometry, vector_to_bearing
 from detector import FrequencyDetector
 from doa_engine import ArrayDOA
 from triangulation import Triangulator
 from audio_manager import MultiDeviceAudioManager
+from classifier import DroneClassifier
+from vision_detector import DroneCamera, discover_cameras, normalize_camera_source
+
+
+def resolve_config_path(geo, value):
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return Path(geo.config_path).resolve().parent / path
+
+
+def create_classifier(geo, model_path=None, disabled=False):
+    cfg = geo.cfg.get("classifier", {})
+    if disabled or not cfg.get("enabled", True):
+        return None
+    configured_model = model_path or cfg.get("model_path", "model/mobilenetv2_drone.onnx")
+    metadata_path = cfg.get("metadata_path", "model/metadata.json")
+    return DroneClassifier(
+        model_path=resolve_config_path(geo, configured_model),
+        metadata_path=resolve_config_path(geo, metadata_path),
+        sample_rate=geo.sample_rate,
+        threshold=cfg.get("threshold"),
+        votes_required=cfg.get("votes_required"),
+        vote_window=cfg.get("vote_window"),
+    )
+
+
+def format_classification(result, classifier, signal_detected=True):
+    if classifier is None:
+        return "Classifier: OFF"
+    if not signal_detected:
+        return "Classifier: NO TARGET SIGNAL"
+    if result is None or not result.is_ready:
+        return "Classifier: BUFFERING"
+    if result.is_drone:
+        label = "DRONE CONFIRMED"
+    elif result.probability >= result.threshold:
+        label = "DRONE CANDIDATE"
+    else:
+        label = "NO DRONE"
+    return (
+        f"{label} {result.probability * 100.0:.1f}% "
+        f"({result.decision_votes}/{result.vote_window})"
+    )
+
+
+def add_classifier_arguments(parser):
+    parser.add_argument("--model", default=None, help="custom path to the drone classifier ONNX model")
+    parser.add_argument("--no-classifier", action="store_true", help="disable drone classification")
+    parser.add_argument(
+        "--require-drone",
+        action="store_true",
+        help="require confirmed drone classification before declaring a target lock",
+    )
+
+
+def create_vision(geo, camera=None, model_path=None, camera_fov=None, disabled=False):
+    cfg = geo.cfg.get("vision", {})
+    if disabled or not cfg.get("enabled", True):
+        return None
+    configured_model = model_path or cfg.get("model_path", "model/Yolo/best.pt")
+    selected_camera = camera if camera is not None else cfg.get("camera", "0")
+    camera_key = str(normalize_camera_source(selected_camera))
+    camera_fovs = cfg.get("camera_fovs", {})
+    if camera_fov is not None:
+        horizontal_fov = camera_fov
+    elif camera_key in camera_fovs:
+        horizontal_fov = camera_fovs[camera_key]
+    else:
+        horizontal_fov = cfg.get("horizontal_fov_deg") if camera is None else None
+    return DroneCamera(
+        model_path=resolve_config_path(geo, configured_model),
+        camera=selected_camera,
+        confidence=float(cfg.get("confidence", 0.5)),
+        inference_hz=float(cfg.get("inference_hz", 10.0)),
+        horizontal_fov_deg=horizontal_fov,
+        orientation_deg=float(cfg.get("orientation_deg", 0.0)),
+        max_target_step_px=float(cfg.get("max_target_step_px", 120.0)),
+        confirmation_frames=int(cfg.get("confirmation_frames", 3)),
+        lost_timeout_s=float(cfg.get("lost_timeout_s", 0.75)),
+    )
+
+
+def format_vision(result, vision):
+    if vision is None:
+        return "Camera: OFF"
+    if result is None or result.timestamp == 0.0 and result.error is None:
+        return "Camera: CONNECTING"
+    if result.error:
+        return "Camera: OFFLINE"
+    if result.target is not None:
+        if result.direction is None:
+            return f"Camera: DRONE {result.best_confidence:.1%} | DIRECTION UNCALIBRATED"
+        direction = result.direction
+        return (
+            f"Camera: DRONE {result.best_confidence:.1%} | "
+            f"Bearing: {direction.global_bearing_deg:.1f}° | "
+            f"Elevation: {direction.elevation_deg:+.1f}°"
+        )
+    if result.detections:
+        return f"Camera: ACQUIRING {result.best_confidence:.1%}"
+    return "Camera: CLEAR"
+
+
+def add_vision_arguments(parser):
+    parser.add_argument("--camera", default=None, help="camera index or /dev/video device path")
+    parser.add_argument("--camera-fov", type=float, default=None, help="horizontal camera FOV in degrees; required for direction")
+    parser.add_argument("--yolo-model", default=None, help="custom path to the YOLO .pt model")
+    parser.add_argument("--no-vision", action="store_true", help="disable camera detection")
 
 
 def parse_args():
@@ -40,23 +150,37 @@ def parse_args():
     pg.add_argument("--simulate", action="store_true", help="run in simulation mode with virtual moving source")
     pg.add_argument("--uma8-only", action="store_true", help="use only the front UMA-8 and report direction without range")
     pg.add_argument("--uma16-only", action="store_true", help="use only the left UMA-16 and report direction without range")
+    pg.add_argument(
+        "--uma16-front-only",
+        action="store_true",
+        help="use only the UMA-16 at the front origin, facing forward, and report direction without range",
+    )
     pg.add_argument("--low", type=float, default=None, help="lower target band limit (Hz)")
     pg.add_argument("--high", type=float, default=None, help="upper target band limit (Hz)")
     pg.add_argument("--threshold", type=float, default=None, help="detection threshold in dBFS")
     pg.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
-    pg.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
+    pg.add_argument("--dev-left", default=None, help="device index or name for UMA-16")
+    add_classifier_arguments(pg)
+    add_vision_arguments(pg)
 
     # 2. CLI
     pc = sub.add_parser("cli", help="run headless terminal tracking")
     pc.add_argument("--simulate", action="store_true", help="run with virtual acoustic source")
     pc.add_argument("--uma8-only", action="store_true", help="use only the front UMA-8 and report direction without range")
     pc.add_argument("--uma16-only", action="store_true", help="use only the left UMA-16 and report direction without range")
+    pc.add_argument(
+        "--uma16-front-only",
+        action="store_true",
+        help="use only the UMA-16 at the front origin, facing forward, and report direction without range",
+    )
     pc.add_argument("--low", type=float, default=900.0, help="lower target band limit (Hz)")
     pc.add_argument("--high", type=float, default=1100.0, help="upper target band limit (Hz)")
     pc.add_argument("--threshold", type=float, default=-65.0, help="detection threshold (dBFS)")
     pc.add_argument("--average", type=int, default=4, help="number of averaged blocks")
     pc.add_argument("--dev-front", default=None, help="device index or name for Front UMA-8")
-    pc.add_argument("--dev-left", default=None, help="device index or name for Left UMA-16")
+    pc.add_argument("--dev-left", default=None, help="device index or name for UMA-16")
+    add_classifier_arguments(pc)
+    add_vision_arguments(pc)
 
     # 3. Simulate
     ps = sub.add_parser("simulate", help="run offline math verification benchmark")
@@ -70,20 +194,53 @@ def parse_args():
 
     # 5. List Devices
     sub.add_parser("list-devices", help="list audio input devices")
+    sub.add_parser("list-cameras", help="list usable camera indices and device paths")
 
     args = p.parse_args()
-    if getattr(args, "uma8_only", False) and getattr(args, "uma16_only", False):
-        p.error("--uma8-only and --uma16-only are mutually exclusive")
+    array_modes = sum(
+        bool(getattr(args, name, False))
+        for name in ("uma8_only", "uma16_only", "uma16_front_only")
+    )
+    if array_modes > 1:
+        p.error("--uma8-only, --uma16-only, and --uma16-front-only are mutually exclusive")
+    if getattr(args, "require_drone", False) and getattr(args, "no_classifier", False):
+        p.error("--require-drone cannot be combined with --no-classifier")
     return args
 
 
 def cmd_gui(args):
     from tactical_gui import TacticalGUI
     geo = RigGeometry()
+    if args.uma16_front_only:
+        geo.set_uma16_front_only(True)
+    try:
+        classifier = create_classifier(geo, model_path=args.model, disabled=args.no_classifier)
+    except Exception as exc:
+        print(f"[WARNING] Classifier unavailable: {exc}")
+        classifier = None
+    try:
+        vision = create_vision(
+            geo,
+            camera=args.camera,
+            model_path=args.yolo_model,
+            camera_fov=args.camera_fov,
+            disabled=args.no_vision,
+        )
+    except Exception as exc:
+        print(f"[WARNING] Camera detection unavailable: {exc}")
+        vision = None
     root = tk.Tk()
-    app = TacticalGUI(root, geometry=geo, simulate=args.simulate)
+    app = TacticalGUI(
+        root,
+        geometry=geo,
+        simulate=args.simulate,
+        classifier=classifier,
+        require_drone=args.require_drone,
+        vision=vision,
+    )
     app.var_front_only.set(args.uma8_only)
     app.var_left_only.set(args.uma16_only)
+    app.var_uma16_front_only.set(args.uma16_front_only)
     if args.low is not None:
         app.var_low.set(str(args.low))
     if args.high is not None:
@@ -99,15 +256,38 @@ def cmd_gui(args):
 
 def cmd_cli(args):
     geo = RigGeometry()
+    if args.uma16_front_only:
+        geo.set_uma16_front_only(True)
     detector = FrequencyDetector(
         sample_rate=geo.sample_rate,
         block_duration=0.2,
         average_blocks=args.average,
         threshold_dbfs=args.threshold,
     )
+    try:
+        classifier = create_classifier(geo, model_path=args.model, disabled=args.no_classifier)
+    except Exception as exc:
+        print(f"[WARNING] Classifier unavailable: {exc}")
+        classifier = None
+    try:
+        vision = create_vision(
+            geo,
+            camera=args.camera,
+            model_path=args.yolo_model,
+            camera_fov=args.camera_fov,
+            disabled=args.no_vision,
+        )
+    except Exception as exc:
+        print(f"[WARNING] Camera detection unavailable: {exc}")
+        vision = None
+    classifier_hop = max(0.05, float(geo.cfg.get("classifier", {}).get("hop_seconds", 0.2)))
+    classification = None
+    last_classification = 0.0
+    last_vision_report = 0.0
+
     if args.uma8_only:
         selected_ids = ["front"]
-    elif args.uma16_only:
+    elif args.uma16_only or args.uma16_front_only:
         selected_ids = ["left"]
     else:
         selected_ids = list(geo.arrays)
@@ -134,6 +314,8 @@ def cmd_cli(args):
     print(f" {geo.arrays[single_id].name} Direction Tracker" if single_id else " Dual-Array Acoustic Triangulation Tracker")
     print(f" Target Band: {args.low:g} - {args.high:g} Hz | Threshold: {args.threshold:g} dBFS")
     print(f" Capture: {'SIMULATION' if args.simulate else 'HARDWARE'} | Arrays: {', '.join(selected_ids)}")
+    print(f" Classifier: {'ACTIVE' if classifier else 'OFF'} | Require Drone: {args.require_drone}")
+    print(f" Camera: {vision.camera if vision else 'OFF'}")
     print(" Press Ctrl+C to stop.")
     print("===================================================================\n")
 
@@ -143,16 +325,38 @@ def cmd_cli(args):
     if args.dev_left is not None:
         dev_map["left"] = args.dev_left
 
+    if vision is not None:
+        vision.start()
     audio_mgr.start(device_map=dev_map if dev_map else None, array_ids=selected_ids)
     try:
         while True:
+            if vision is not None:
+                vision_now = time.monotonic()
+                if vision_now - last_vision_report >= 1.0:
+                    print(f"[{format_vision(vision.get_result(), vision)}]", flush=True)
+                    last_vision_report = vision_now
             blocks = audio_mgr.get_latest_blocks()
             if not blocks:
                 time.sleep(0.05)
                 continue
 
             det_block = blocks.get("front", next(iter(blocks.values())))
-            det_res = detector.process(det_block[:, 0], args.low, args.high)
+            det_channel = det_block[:, 0]
+            det_res = detector.process(det_channel, args.low, args.high)
+
+            now = time.monotonic()
+            classification_updated = False
+            if not det_res.detected:
+                if classifier is not None:
+                    classifier.reset()
+                classification = None
+                last_classification = 0.0
+            elif classifier is not None and now - last_classification >= classifier_hop:
+                classification = classifier.classify(det_channel)
+                last_classification = now
+                classification_updated = True
+            class_text = format_classification(classification, classifier, det_res.detected)
+            drone_confirmed = det_res.detected and classification is not None and classification.is_drone
 
             if det_res.detected:
                 bearings = {}
@@ -169,19 +373,27 @@ def cmd_cli(args):
                     single = results[single_id]
                     array_label = "UMA-8" if single_id == "front" else "UMA-16"
                     if single.global_angle_deg is not None and (single.prominence >= 1.4 or single.stable):
+                        status = f"{array_label} BEARING"
+                        if args.require_drone and not drone_confirmed:
+                            status += " / DRONE ID REQUIRED"
                         print(
-                            f"[{array_label} BEARING] {single.global_angle_deg:5.1f}° | "
-                            f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | Direction only",
+                            f"[{status}] {single.global_angle_deg:5.1f}° | "
+                            f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
+                            f"Direction only | {class_text}",
                             flush=True,
                         )
                     elif single.error == "spatial_aliasing":
                         print(
                             f"[DOA BLOCKED] {det_res.peak_freq:6.1f}Hz exceeds "
-                            f"{doa_engines[single_id].max_direction_freq_hz:.0f}Hz safe direction limit",
+                            f"{doa_engines[single_id].max_direction_freq_hz:.0f}Hz safe direction limit | {class_text}",
                             flush=True,
                         )
                     else:
-                        print(f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz | Waiting reliable {array_label} bearing", flush=True)
+                        print(
+                            f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz | "
+                            f"Waiting reliable {array_label} bearing | {class_text}",
+                            flush=True,
+                        )
                     time.sleep(0.1)
                     continue
 
@@ -191,26 +403,40 @@ def cmd_cli(args):
                     stable={arr_id: res.stable for arr_id, res in results.items()},
                 )
                 if tri.success and tri.x is not None:
+                    if args.require_drone and not drone_confirmed:
+                        status = "ACOUSTIC SOURCE - DRONE ID REQUIRED"
+                    elif drone_confirmed:
+                        status = "TARGET LOCKED - DRONE CONFIRMED"
+                    else:
+                        status = "TARGET LOCKED - UNKNOWN/NON-DRONE"
                     print(
-                        f"[TARGET LOCKED] (X: {tri.x:+5.2f}m, Y: {tri.y:+5.2f}m) | "
+                        f"[{status}] (X: {tri.x:+5.2f}m, Y: {tri.y:+5.2f}m) | "
                         f"Range: {tri.range_m:4.2f}m | Bearing: {tri.bearing_deg:5.1f}° | "
                         f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                        f"Rays: {tri.active_rays}/{len(selected_ids)}",
+                        f"Rays: {tri.active_rays}/{len(selected_ids)} | {class_text}",
                         flush=True,
                     )
                 else:
                     b_str = " ".join(f"{k}:{v:.0f}°" for k, v in bearings.items() if v is not None)
                     print(
                         f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                        f"Bearings: [{b_str}] | Waiting line intersection",
+                        f"Bearings: [{b_str}] | Waiting line intersection | {class_text}",
                         flush=True,
                     )
+            elif classification_updated:
+                print(
+                    f"[SCANNING] {class_text} | Peak: {det_res.peak_freq:6.1f}Hz "
+                    f"({det_res.peak_db:5.1f} dBFS)",
+                    flush=True,
+                )
             time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\nStopping audio capture...")
     finally:
         audio_mgr.stop()
+        if vision is not None:
+            vision.stop()
 
 
 def cmd_simulate(args):
@@ -237,6 +463,24 @@ def cmd_simulate(args):
         for arr_id, arr in geo.arrays.items()
     }
     triangulator = Triangulator(geo, min_prominence=1.5)
+    try:
+        classifier = create_classifier(geo)
+    except Exception as exc:
+        print(f"[WARNING] Classifier unavailable: {exc}")
+        classifier = None
+    classification = None
+
+    if classifier is not None:
+        reference_path = resolve_config_path(
+            geo,
+            geo.cfg.get("classifier", {}).get("reference_path", "model/reference_outputs.npz"),
+        )
+        try:
+            reference_passed, max_diff = classifier.validate_against_reference(reference_path)
+            status = "PASS" if reference_passed else "FAIL"
+            print(f"Classifier Reference Validation: [{status}] max probability error = {max_diff:.6f}\n")
+        except Exception as exc:
+            print(f"[WARNING] Classifier reference validation failed: {exc}\n")
 
     errors = []
     bearings_log = {arr_id: [] for arr_id in geo.arrays}
@@ -244,6 +488,8 @@ def cmd_simulate(args):
     for step in range(15):
         blocks = audio_mgr.get_latest_blocks()
         det_res = detector.process(blocks["front"][:, 0], args.freq - 100, args.freq + 100)
+        if classifier is not None:
+            classification = classifier.classify(blocks["front"][:, 0])
         bearings = {}
         proms = {}
         stable = {}
@@ -270,6 +516,8 @@ def cmd_simulate(args):
             mean_vector = np.mean(np.exp(1j * angles_rad))
             mean_bearing = float(np.rad2deg(np.angle(mean_vector)) % 360.0)
             print(f"  {geo.arrays[arr_id].name:<15}: Estimated Bearing = {mean_bearing:5.1f}°")
+
+    print(f"Simulated Source Classification: {format_classification(classification, classifier)}")
 
     if errors:
         med_err = np.median(errors)
@@ -333,6 +581,18 @@ def cmd_list_devices(args):
         print(f"  [{d['index']:2d}] {d['name']} ({d['channels']} in, {d['samplerate']:.0f} Hz)")
 
 
+def cmd_list_cameras(args):
+    devices = discover_cameras()
+    if not devices:
+        print("No usable cameras found. Check the USB connection and camera permissions.")
+        return
+    print(f"Found {len(devices)} camera(s):")
+    for device in devices:
+        stable = f" | stable: {device.stable_path}" if device.stable_path else ""
+        print(f"  [{device.index}] {device.path}{stable}")
+    print("\nUse the index or a listed path with --camera.")
+
+
 def main():
     args = parse_args()
     if args.command == "gui":
@@ -345,6 +605,8 @@ def main():
         cmd_test_geometry(args)
     elif args.command == "list-devices":
         cmd_list_devices(args)
+    elif args.command == "list-cameras":
+        cmd_list_cameras(args)
 
 
 if __name__ == "__main__":
