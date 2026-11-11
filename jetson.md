@@ -85,6 +85,10 @@ model/mobilenetv2_drone.onnx
 model/metadata.json
 model/reference_outputs.npz
 classifier.py
+tracked_camera.py
+visual_tracking/core.py
+visual_tracking/logic.py
+visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar
 rig_config.json
 ```
 
@@ -94,27 +98,40 @@ On the Jetson:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-venv python3-tk portaudio19-dev libportaudio2
+sudo apt install -y python3-venv python3-tk portaudio19-dev libportaudio2 cuda-cupti-12-6 python3-opencv
 
 cd ~/frequency_id
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install numpy scipy sounddevice
 ```
 
-Install an **ARM64 ONNX Runtime wheel compatible with the Jetson's JetPack/L4T and Python versions**, preferably from NVIDIA's Jetson resources/Jetson Zoo:
+Install an **ARM64 ONNX Runtime wheel compatible with the Jetson's JetPack/L4T and Python versions**, preferably from NVIDIA's Jetson resources/Jetson Zoo. If the normal `python -m pip install onnxruntime` offers a compatible ARM64 wheel, it can be used instead. Do not copy an x86 wheel from the PC.
+
+For JetPack 6 / CUDA 12.6 with Python 3.10, install the NVIDIA Jetson AI Lab PyTorch pair before Ultralytics so pip does not pull a generic CUDA bundle:
 
 ```bash
-python -m pip install /path/to/the/matching/onnxruntime-wheel.whl
+python -m pip install \
+  --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
+  --extra-index-url https://pypi.org/simple \
+  torch==2.8.0 torchvision==0.23.0
+python -m pip install -r requirements.txt
 ```
 
-If the normal `python -m pip install onnxruntime` offers a compatible ARM64 wheel for that Python version, it can be used instead. Do not copy an x86 wheel from the PC.
-
-Verify all imports and CPU inference availability:
+The NVIDIA PyTorch 2.8 Jetson wheel requires NumPy 1.x. For an IMX219/Argus CSI camera, pip OpenCV also lacks GStreamer, so use the system ARM64 OpenCV installed above:
 
 ```bash
-python -c "import numpy, scipy, sounddevice, tkinter, onnxruntime as ort; print('ONNX Runtime:', ort.__version__); print(ort.get_available_providers())"
+python -m pip install numpy==1.26.4
+python -m pip uninstall -y opencv-python
+printf '%s\n' '/usr/lib/python3/dist-packages' > .venv/lib/python3.10/site-packages/jetson-system-opencv.pth
+```
+
+If an existing Jetson service already owns the CSI camera, do not stop it blindly. A local RTSP stream such as `rtsp://127.0.0.1:8554/drone` can be selected explicitly with `--camera` after verifying that it is the intended source.
+
+Verify all imports and CPU audio inference availability:
+
+```bash
+python -c "import numpy, scipy, sounddevice, tkinter, cv2, ultralytics, PIL, onnxruntime as ort; print('ONNX Runtime:', ort.__version__); print(ort.get_available_providers())"
 ```
 
 `CPUExecutionProvider` must appear in the provider list.
@@ -126,23 +143,28 @@ With the virtual environment active:
 ```bash
 cd ~/frequency_id
 sha256sum model/mobilenetv2_drone.onnx model/reference_outputs.npz
+sha256sum visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar
 ```
 
-Compare the hashes with `model/metadata.json`, then run the headless checks:
+Compare the audio hashes with `model/metadata.json`. The DyHiT checkpoint SHA-256 must be `8bd307baf7ecd10b930a9d2a7288bb74f87c03dc6dd984356f7be9a458b27f61`. Then run the headless checks:
 
 ```bash
-python test_classifier.py
-python test_vertical_uma16.py
+python -m unittest test_classifier test_vertical_uma16 test_vision test_direction_suppression test_vision_tracking
+python -m pytest visual_tracking/upstream_tests -q
+python -c "from visual_tracking.core import load_tracker; tracker, _ = load_tracker('visual_tracking/tracker_lib', 'dyhit'); print(tracker.device)"
 python main.py test-geometry
 python main.py simulate --target-x -0.6 --target-y 1.5
+python main.py list-cameras
 ```
 
 Expected results:
 
-- All 12 automated tests pass.
+- All 44 project tests and 14 upstream tracker-core tests pass.
+- The real DyHiT checkpoint loads and reports the expected CUDA device.
 - ONNX maximum probability error is below `0.001`.
 - Geometry reports 23 active microphones and 36.5 cm board separation.
 - Simulation confirms `DRONE` and reaches `TARGET LOCKED - DRONE CONFIRMED`.
+- Camera enumeration works; YOLO detection remains available without FOV, while camera direction stays uncalibrated until a measured per-camera FOV is entered.
 
 Only if the agent has confirmed access to a working Jetson desktop/display, also run:
 
@@ -188,7 +210,8 @@ For each array, confirm:
 - Frequency and direction update.
 - Classification progresses from `BUFFERING` to a live percentage and vote count.
 - Single-array mode displays direction only, without range or coordinates.
-- UMA-16 front-only mode uses the UMA-16 device selected by `--dev-left` and reports bearings relative to its 0° forward-facing orientation.
+- UMA-16 modes estimate elevation from the four microphone rows and show `ABOVE`, `BELOW`, `LEVEL`, or `UNCERTAIN` without fixed Z or source height.
+- UMA-16 front-only mode uses the UMA-16 device selected by `--dev-left` and reports 3D direction relative to its 0° forward-facing orientation.
 
 ### 7. Test the complete dual-array system
 
@@ -223,18 +246,31 @@ Verify the classification tile, vote counter, tactical marker, **Require Drone I
 
 ### 8. Perform a stability check before deployment use
 
-Run the complete dual-array CLI or GUI for at least 15 minutes with a known sound source. Confirm continuous classification/location updates, no audio-stream failures, no growing lag, and acceptable CPU usage.
+Run the complete dual-array CLI or GUI for at least 15 minutes with a known sound source. Confirm continuous classification/location updates, no audio-stream failures, no growing lag, and acceptable CPU usage. Separately run the selected camera with DyHiT for 15 minutes, including target occlusion and reappearance. Confirm `DRONE TRACKING` continues between YOLO checks, loss clears direction, reacquisition works, and `TrackedDroneCamera.get_metrics()` shows a bounded one-item detector queue. At 30 FPS, the acceptance targets are tracker p95 <= 33 ms and tracker-frame output p95 <= 66 ms; record actual values and do not claim the low-latency gate if they are exceeded.
 
 Only after manual operation is stable should autostart/systemd setup or CUDA/TensorRT optimization be considered. Any future inference-provider change must rerun `test_classifier.py` and the simulation benchmark.
+
+### Measured tracker benchmarks (2026-11-11)
+
+These are controlled moving-target measurements with real YOLO and DyHiT models, not physical-drone accuracy results:
+
+- PC RTX 5050: tracker p95 `13.95 ms`, output p95 `14.27 ms`; target met.
+- Orin before separate CUDA streams: tracker p95 `63.34 ms`, output p95 `64.77 ms`.
+- Orin with separate YOLO/tracker CUDA streams: tracker p95 `50.57 ms`, output p95 `52.25 ms`; output target met, tracker p95 target not met.
+- Orin DyHiT alone: mean `29.87 ms`, p95 `33.26 ms`, approximately 30 FPS.
+
+The upstream repository references a DyHiT TensorRT adapter but does not include it in the pinned tree. Do not claim TensorRT integration or a 100% hardware guarantee. Further optimization requires a separately implemented and validated engine.
 
 ## Verification / acceptance checklist
 
 The Jetson setup is ready when:
 
-- Offline classifier and vertical-array tests all pass.
+- All audio, geometry, elevation, vision, suppression, and asynchronous tracking tests pass.
 - Both USB arrays open at 44.1 kHz with their required channel counts.
 - UMA-8-only and UMA-16-only modes work independently.
-- UMA-16 front-only mode reports forward-referenced classification and bearing, uses `--dev-left`, and shows no range or coordinates.
+- UMA-16 front-only mode reports forward-referenced 3D direction, uses `--dev-left`, and shows no range, coordinates, fixed Z, or source height.
+- The selected Jetson camera produces YOLO + DyHiT `DRONE TRACKING` frames, with no fabricated tracking probability; direction remains disabled until its measured FOV is configured.
+- Tracker loss clears the target/direction, reacquisition works, detector queues remain bounded, and measured tracking latency meets the stated p95 targets or is explicitly reported as unmet.
 - Switching from UMA-16 front-only mode back to normal mode restores the left-facing geometry.
 - Dual-array mode reports classification, bearing, coordinates, and range with a real sound source.
 - Strict mode waits for drone confirmation before declaring a target lock.

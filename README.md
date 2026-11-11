@@ -22,6 +22,7 @@ and YOLO camera detection—presented together in a tactical GUI and a headless 
 | **2D localization** | Weighted bearing-ray intersection for dual-array position and range |
 | **Audio identification** | MobileNetV2 ONNX drone probability with temporal voting |
 | **Camera identification** | Selectable-camera YOLO detection with boxes, confidence, and direction |
+| **Visual tracking** | Per-frame DyHiT target following with asynchronous YOLO correction and reacquisition |
 | **Operator interface** | Tactical map, live spectrum, camera preview, 3D direction, and organized settings |
 
 Audio and vision remain **independent evidence channels**. Camera detection does not
@@ -46,7 +47,8 @@ flowchart LR
 
     subgraph AI["DRONE IDENTIFICATION"]
         MNV["MobileNetV2 ONNX<br/>probability + voting"]
-        YOLO["YOLO11<br/>camera detection"]
+        YOLO["YOLO11<br/>periodic detection"]
+        DYHIT["DyHiT<br/>per-frame tracking"]
         CAM["FOV-calibrated<br/>camera direction"]
     end
 
@@ -56,7 +58,9 @@ flowchart LR
     AZ --> EL --> VEC
     AZ --> TRI
     FFT --> MNV
-    CAMERA["Selected camera"] --> YOLO --> CAM
+    CAMERA["Selected camera"] --> YOLO
+    CAMERA --> DYHIT --> CAM
+    YOLO -->|"confirm / correct / reacquire"| DYHIT
 
     TRI --> UI["Tactical GUI + CLI"]
     VEC --> UI
@@ -150,6 +154,35 @@ array; negative elevation means below. If the vertical estimate lacks prominence
 temporal consistency, the interface reports **ELEVATION UNCERTAIN** and draws no arrow
 instead of assuming the source is level.
 
+### Fixed Sound Direction Suppression
+
+UMA-16 front-only mode can hide a fixed environmental sound by global azimuth. First
+run with suppression disabled and note its stable bearing, then configure a narrow
+sector around that direction:
+
+```bash
+python3 main.py cli --uma16-front-only --suppress-bearing 330 --suppress-tolerance 10
+```
+
+This example hides bearings from `320°` through `340°`. In the GUI, use **Settings →
+Audio & Detection → Suppress Fixed Direction**, enter the bearing and ± tolerance, and
+click **Apply**. The settings are saved under `uma16_front_only.direction_suppression`
+in `rig_config.json`; suppression is disabled by default and cannot be enabled through
+CLI flags in other array modes.
+
+The tracker evaluates up to four above-threshold frequency peaks, so it can select a
+weaker sound outside the excluded sector instead of remaining locked to the fixed
+source. When no acceptable target remains, the acoustic telemetry, radar ray, and 3D
+arrow clear and the status reads **FIXED DIRECTION SUPPRESSED**. A static magenta dashed
+ray and two boundary lines show the configured exclusion sector on the tactical map;
+this marker is not a detected target. Camera detections stay independent.
+
+This is a **DOA/display filter, not audio cancellation**. Every sound in the excluded
+azimuth sector is hidden. Another source must exceed the detection threshold, and two
+sources at the same frequency may not be separable when the fixed source dominates the
+DOA estimate. MobileNetV2 continues to analyze the mixed microphone waveform rather
+than a directionally separated recording.
+
 ## GUI Guide
 
 The interface is organized into four working areas:
@@ -179,8 +212,20 @@ Select any listed index or device path, then choose **Refresh Cameras** after ha
 changes. A stable `/dev/v4l/by-id/...` path is preferred because numeric indices can
 change after reconnecting.
 
-The YOLO worker runs in the background and keeps only the latest frame. A confirmed
-visual target requires three consistent detections; isolated box jumps are rejected.
+By default, **DyHiT follows one confirmed drone on every camera frame** while YOLO runs
+asynchronously every fifth tracked frame to confirm or correct it. While searching, the
+latest frames are offered to YOLO without building a detection backlog. Delayed detections
+are matched to their source frame, corrections use bounded catch-up, and target loss clears
+the box and direction before reacquisition begins.
+
+`DRONE TRACKING` is a visual-tracking state, not a new detection probability. The annotated
+image labels the most recent YOLO confidence separately as `LAST YOLO`. Use `--no-tracker`
+to restore the original three-frame YOLO-only confirmation and proximity lock, or
+`--detector-every N` to change the verification interval.
+
+The pinned DyHiT source, checkpoint hash, and download command are documented in
+[`visual_tracking/UPSTREAM.md`](visual_tracking/UPSTREAM.md). Runtime dependencies are in
+`requirements.txt`; no ROS installation is required.
 
 ### Modes & Lock
 
@@ -227,6 +272,10 @@ python3 main.py gui --camera 0 --camera-fov 75
 python3 main.py gui --yolo-model /path/to/best.pt
 python3 main.py gui --no-vision
 
+# DyHiT tracking interval or explicit YOLO-only fallback
+python3 main.py gui --tracker dyhit --detector-every 5
+python3 main.py gui --no-tracker
+
 # Require confirmed audio drone ID for an acoustic lock
 python3 main.py gui --require-drone
 ```
@@ -270,8 +319,9 @@ python3 main.py cli --simulate --require-drone --low 900 --high 1100
 ## Verification
 
 ```bash
-# Complete automated suite: audio, geometry, elevation, and vision
-python3 -m unittest test_classifier test_vertical_uma16 test_vision
+# Complete automated suite: audio, geometry, elevation, vision, and tracking
+python3 -m unittest test_classifier test_vertical_uma16 test_vision test_direction_suppression test_vision_tracking
+python3 -m pytest visual_tracking/upstream_tests -q
 
 # Physical rig geometry checks
 python3 main.py test-geometry
@@ -294,6 +344,7 @@ and room reflections; synthetic validation does not replace this hardware check.
 | `ELEVATION UNCERTAIN` | Signal quality, reflections, vertical prominence, and temporal stability |
 | `DOA BLOCKED` | Target frequency exceeds the array's safe spatial-aliasing limit |
 | Camera `OFFLINE` | Camera path, permissions, another process using the device, or USB connection |
+| `TRACKER OFFLINE` | DyHiT checkpoint/library paths, dependencies, CUDA availability, and the detailed camera error |
 | `DIRECTION UNCALIBRATED` | Enter a valid horizontal FOV for the selected camera |
 | Classification stays idle | Audio classification is intentionally gated by target-band detection |
 
@@ -303,18 +354,23 @@ and room reflections; synthetic validation does not replace this hardware check.
 |---|---|
 | [`main.py`](main.py) | CLI/GUI launcher, arguments, model setup, and device listing |
 | [`audio_manager.py`](audio_manager.py) | Multi-device capture and synthetic wavefield simulation |
-| [`detector.py`](detector.py) | Target-band FFT detection and peak estimation |
+| [`detector.py`](detector.py) | Target-band FFT detection and ranked spectral peaks |
+| [`direction_suppression.py`](direction_suppression.py) | Front-only exclusion zones and alternate-target selection |
 | [`doa_engine.py`](doa_engine.py) | Azimuth, UMA-16 elevation, confidence tracking, and 3D vectors |
 | [`geometry.py`](geometry.py) | Array geometry and local/global coordinate transforms |
 | [`triangulation.py`](triangulation.py) | Weighted dual-array position and range estimation |
 | [`classifier.py`](classifier.py) | MobileNetV2 ONNX inference, resampling, and temporal voting |
 | [`vision_detector.py`](vision_detector.py) | Camera selection, background YOLO inference, and visual direction |
+| [`tracked_camera.py`](tracked_camera.py) | Asynchronous DyHiT/YOLO pipeline, bounded queues, directions, and metrics |
+| [`visual_tracking/`](visual_tracking/) | Pinned tracker core, decision logic, DyHiT source, checkpoint, and provenance |
 | [`tactical_gui.py`](tactical_gui.py) | Telemetry, radar, camera preview, 3D arrow, and organized settings |
 | [`rig_config.json`](rig_config.json) | Hardware geometry, detection, model, and camera configuration |
 | [`model/`](model/) | MobileNetV2 ONNX assets and YOLO `best.pt` checkpoint |
 | [`test_classifier.py`](test_classifier.py) | ONNX parity, resampling, voting, and acoustic integration tests |
 | [`test_vertical_uma16.py`](test_vertical_uma16.py) | Geometry, azimuth, elevation, and direction-vector regressions |
 | [`test_vision.py`](test_vision.py) | Vision filtering, target lock, direction, retry, and shutdown tests |
+| [`test_direction_suppression.py`](test_direction_suppression.py) | Exclusion zones, alternate peaks, tracker isolation, and display guards |
+| [`test_vision_tracking.py`](test_vision_tracking.py) | Asynchronous tracking, loss, confidence, queue, and failure regressions |
 
 ---
 

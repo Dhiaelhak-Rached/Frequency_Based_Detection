@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drone_target_tracker</name>
+  <version>0.1.0</version>
+  <description>Follows one target with a single-object tracker (SUTrack, HiT-Base or DyHiT) on every camera image,
+    checked and corrected by the detections of isaac_ros_yolov8. Publishes the target's box and bearing.</description>
+  <maintainer email="zghibiahmed141@gmail.com">Ahmed Zghibi</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- only for launch/thermal_tracking.launch.py (camera + detector + tracker in one command) -->
+  <exec_depend>v4l2_camera</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
+  <exec_depend>isaac_ros_dnn_image_encoder</exec_depend>
+  <exec_depend>isaac_ros_tensor_rt</exec_depend>
+  <exec_depend>isaac_ros_yolov8</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

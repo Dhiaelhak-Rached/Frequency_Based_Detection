@@ -27,11 +27,13 @@ import numpy as np
 
 from geometry import RigGeometry, vector_to_bearing
 from detector import FrequencyDetector
+from direction_suppression import DirectionSuppression, displayable_doa, select_front_only_target
 from doa_engine import ArrayDOA
 from triangulation import Triangulator
 from audio_manager import MultiDeviceAudioManager
 from classifier import DroneClassifier
 from vision_detector import DroneCamera, discover_cameras, normalize_camera_source
+from tracked_camera import TrackedDroneCamera
 
 
 def resolve_config_path(geo, value):
@@ -94,7 +96,16 @@ def add_classifier_arguments(parser):
     )
 
 
-def create_vision(geo, camera=None, model_path=None, camera_fov=None, disabled=False):
+def create_vision(
+    geo,
+    camera=None,
+    model_path=None,
+    camera_fov=None,
+    disabled=False,
+    tracker=None,
+    detector_every=None,
+    no_tracker=False,
+):
     cfg = geo.cfg.get("vision", {})
     if disabled or not cfg.get("enabled", True):
         return None
@@ -108,7 +119,7 @@ def create_vision(geo, camera=None, model_path=None, camera_fov=None, disabled=F
         horizontal_fov = camera_fovs[camera_key]
     else:
         horizontal_fov = cfg.get("horizontal_fov_deg") if camera is None else None
-    return DroneCamera(
+    common = dict(
         model_path=resolve_config_path(geo, configured_model),
         camera=selected_camera,
         confidence=float(cfg.get("confidence", 0.5)),
@@ -119,6 +130,18 @@ def create_vision(geo, camera=None, model_path=None, camera_fov=None, disabled=F
         confirmation_frames=int(cfg.get("confirmation_frames", 3)),
         lost_timeout_s=float(cfg.get("lost_timeout_s", 0.75)),
     )
+    tracker_config = dict(cfg.get("tracker", {}))
+    tracker_enabled = not no_tracker and (tracker_config.get("enabled", False) or tracker is not None)
+    if not tracker_enabled:
+        return DroneCamera(**common)
+    if tracker is not None:
+        tracker_config["name"] = tracker
+    if detector_every is not None:
+        tracker_config["detector_every"] = detector_every
+    for key in ("library_path", "checkpoint_path"):
+        if key in tracker_config:
+            tracker_config[key] = str(resolve_config_path(geo, tracker_config[key]))
+    return TrackedDroneCamera(**common, tracker_config=tracker_config)
 
 
 def format_vision(result, vision):
@@ -127,18 +150,24 @@ def format_vision(result, vision):
     if result is None or result.timestamp == 0.0 and result.error is None:
         return "Camera: CONNECTING"
     if result.error:
+        if result.error.startswith("Tracker error:"):
+            return "Camera: TRACKER OFFLINE"
         return "Camera: OFFLINE"
     if result.target is not None:
+        tracked = result.output_source == "tracker"
+        label = "DRONE TRACKING" if tracked else f"DRONE {result.best_confidence:.1%}"
         if result.direction is None:
-            return f"Camera: DRONE {result.best_confidence:.1%} | DIRECTION UNCALIBRATED"
+            return f"Camera: {label} | DIRECTION UNCALIBRATED"
         direction = result.direction
         return (
-            f"Camera: DRONE {result.best_confidence:.1%} | "
+            f"Camera: {label} | "
             f"Bearing: {direction.global_bearing_deg:.1f}° | "
             f"Elevation: {direction.elevation_deg:+.1f}°"
         )
     if result.detections:
         return f"Camera: ACQUIRING {result.best_confidence:.1%}"
+    if result.tracking_state == "search":
+        return "Camera: SEARCHING"
     return "Camera: CLEAR"
 
 
@@ -147,6 +176,33 @@ def add_vision_arguments(parser):
     parser.add_argument("--camera-fov", type=float, default=None, help="horizontal camera FOV in degrees; required for direction")
     parser.add_argument("--yolo-model", default=None, help="custom path to the YOLO .pt model")
     parser.add_argument("--no-vision", action="store_true", help="disable camera detection")
+    parser.add_argument("--tracker", choices=("dyhit",), default=None, help="enable the visual tracker")
+    parser.add_argument("--detector-every", type=int, default=None, help="YOLO verification interval in tracked frames")
+    parser.add_argument("--no-tracker", action="store_true", help="use YOLO detection without visual tracking")
+
+
+def add_suppression_arguments(parser):
+    parser.add_argument(
+        "--suppress-bearing",
+        type=float,
+        default=None,
+        help="hide a fixed sound bearing in UMA-16 front-only mode (degrees)",
+    )
+    parser.add_argument(
+        "--suppress-tolerance",
+        type=float,
+        default=None,
+        help="half-width of the suppressed bearing sector in degrees",
+    )
+
+
+def create_direction_suppression(geo, args):
+    config = geo.cfg.get("uma16_front_only", {}).get("direction_suppression", {})
+    return DirectionSuppression.from_config(
+        config,
+        bearing_override=args.suppress_bearing,
+        tolerance_override=args.suppress_tolerance,
+    )
 
 
 def parse_args():
@@ -170,6 +226,7 @@ def parse_args():
     pg.add_argument("--dev-left", default=None, help="device index or name for UMA-16")
     add_classifier_arguments(pg)
     add_vision_arguments(pg)
+    add_suppression_arguments(pg)
 
     # 2. CLI
     pc = sub.add_parser("cli", help="run headless terminal tracking")
@@ -189,6 +246,7 @@ def parse_args():
     pc.add_argument("--dev-left", default=None, help="device index or name for UMA-16")
     add_classifier_arguments(pc)
     add_vision_arguments(pc)
+    add_suppression_arguments(pc)
 
     # 3. Simulate
     ps = sub.add_parser("simulate", help="run offline math verification benchmark")
@@ -213,6 +271,23 @@ def parse_args():
         p.error("--uma8-only, --uma16-only, and --uma16-front-only are mutually exclusive")
     if getattr(args, "require_drone", False) and getattr(args, "no_classifier", False):
         p.error("--require-drone cannot be combined with --no-classifier")
+    if getattr(args, "no_tracker", False) and (
+        getattr(args, "tracker", None) is not None or getattr(args, "detector_every", None) is not None
+    ):
+        p.error("--no-tracker cannot be combined with --tracker or --detector-every")
+    if getattr(args, "detector_every", None) is not None and args.detector_every < 1:
+        p.error("--detector-every must be at least 1")
+    suppression_args = (
+        getattr(args, "suppress_bearing", None) is not None
+        or getattr(args, "suppress_tolerance", None) is not None
+    )
+    if suppression_args and not args.uma16_front_only:
+        p.error("--suppress-bearing and --suppress-tolerance require --uma16-front-only")
+    if suppression_args:
+        try:
+            create_direction_suppression(RigGeometry(), args)
+        except ValueError as exc:
+            p.error(str(exc))
     return args
 
 
@@ -233,6 +308,9 @@ def cmd_gui(args):
             model_path=args.yolo_model,
             camera_fov=args.camera_fov,
             disabled=args.no_vision,
+            tracker=args.tracker,
+            detector_every=args.detector_every,
+            no_tracker=args.no_tracker,
         )
     except Exception as exc:
         print(f"[WARNING] Camera detection unavailable: {exc}")
@@ -245,10 +323,12 @@ def cmd_gui(args):
         classifier=classifier,
         require_drone=args.require_drone,
         vision=vision,
+        suppression=create_direction_suppression(geo, args),
     )
     app.var_front_only.set(args.uma8_only)
     app.var_left_only.set(args.uma16_only)
     app.var_uma16_front_only.set(args.uma16_front_only)
+    app._update_suppression_controls()
     if args.low is not None:
         app.var_low.set(str(args.low))
     if args.high is not None:
@@ -266,6 +346,7 @@ def cmd_cli(args):
     geo = RigGeometry()
     if args.uma16_front_only:
         geo.set_uma16_front_only(True)
+    suppression = create_direction_suppression(geo, args)
     detector = FrequencyDetector(
         sample_rate=geo.sample_rate,
         block_duration=0.2,
@@ -284,6 +365,9 @@ def cmd_cli(args):
             model_path=args.yolo_model,
             camera_fov=args.camera_fov,
             disabled=args.no_vision,
+            tracker=args.tracker,
+            detector_every=args.detector_every,
+            no_tracker=args.no_tracker,
         )
     except Exception as exc:
         print(f"[WARNING] Camera detection unavailable: {exc}")
@@ -325,6 +409,11 @@ def cmd_cli(args):
     print(f" Capture: {'SIMULATION' if args.simulate else 'HARDWARE'} | Arrays: {', '.join(selected_ids)}")
     print(f" Classifier: {'ACTIVE' if classifier else 'OFF'} | Require Drone: {args.require_drone}")
     print(f" Camera: {vision.camera if vision else 'OFF'}")
+    if suppression.enabled:
+        print(
+            f" Fixed Direction Suppression: {suppression.bearing_deg:.1f}° "
+            f"± {suppression.tolerance_deg:.1f}°"
+        )
     print(" Press Ctrl+C to stop.")
     print("===================================================================\n")
 
@@ -352,6 +441,25 @@ def cmd_cli(args):
             det_block = blocks.get("front", next(iter(blocks.values())))
             det_channel = det_block[:, 0]
             det_res = detector.process(det_channel, args.low, args.high)
+            front_doa = None
+            if args.uma16_front_only:
+                selection = select_front_only_target(
+                    det_res,
+                    blocks["left"],
+                    doa_engines["left"],
+                    (args.low, args.high),
+                    suppression,
+                )
+                if selection.suppressed:
+                    if classifier is not None:
+                        classifier.reset()
+                    classification = None
+                    last_classification = 0.0
+                    print("[FIXED DIRECTION SUPPRESSED]", flush=True)
+                    time.sleep(0.1)
+                    continue
+                det_res = selection.detection
+                front_doa = selection.doa
 
             now = time.monotonic()
             classification_updated = False
@@ -373,7 +481,11 @@ def cmd_cli(args):
                 results = {}
                 for arr_id, doa in doa_engines.items():
                     if arr_id in blocks:
-                        res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq, band=(args.low, args.high))
+                        res = front_doa if arr_id == "left" and front_doa is not None else doa.estimate(
+                            blocks[arr_id],
+                            target_freq=det_res.peak_freq,
+                            band=(args.low, args.high),
+                        )
                         results[arr_id] = res
                         bearings[arr_id] = res.global_angle_deg
                         proms[arr_id] = res.prominence
@@ -382,6 +494,10 @@ def cmd_cli(args):
                     single = results[single_id]
                     array_label = "UMA-8" if single_id == "front" else "UMA-16"
                     elevation_text = f" | {format_elevation(single)}" if single_id == "left" else ""
+                    if not displayable_doa(single, suppression):
+                        print("[FIXED DIRECTION SUPPRESSED]", flush=True)
+                        time.sleep(0.1)
+                        continue
                     if single.global_angle_deg is not None and (single.prominence >= 1.4 or single.stable):
                         status = f"{array_label} BEARING"
                         if args.require_drone and not drone_confirmed:

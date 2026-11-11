@@ -5,3 +5,9 @@ onnxruntime
 ultralytics
 opencv-python
 Pillow
+timm==0.5.4
+easydict
+yacs
+tensorboardX
+gdown
+pytest

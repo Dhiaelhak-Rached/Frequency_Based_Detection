@@ -5,6 +5,7 @@ Displays the real-time FFT spectrum, selectable-camera annotated video, drone
 telemetry, and the top-down acoustic bearing or triangulated target position.
 """
 
+from dataclasses import replace
 import json
 import time
 import tkinter as tk
@@ -17,6 +18,7 @@ from PIL import Image, ImageTk
 from geometry import RigGeometry
 from vision_detector import discover_cameras, normalize_camera_source, validate_horizontal_fov
 from detector import DetectionResult, FrequencyDetector
+from direction_suppression import DirectionSuppression, displayable_doa, select_front_only_target
 from doa_engine import ArrayDOA
 from triangulation import TriangulationResult, Triangulator
 from audio_manager import MultiDeviceAudioManager
@@ -35,6 +37,7 @@ UNKNOWN_AMBER = "#e3b341"
 RAY_FRONT = "#3fb950"  # Green
 RAY_LEFT = "#58a6ff"   # Blue
 RAY_RIGHT = "#d29922"  # Orange
+SUPPRESSION_MAGENTA = "#ff66c4"
 GRID_COLOR = "#212b36"
 
 
@@ -47,12 +50,16 @@ class TacticalGUI:
         classifier=None,
         require_drone: bool = False,
         vision=None,
+        suppression=None,
     ):
         self.root = root
         self.geo = geometry
         self.simulate = simulate
         self.classifier = classifier
         self.vision = vision
+        self.suppression = suppression or DirectionSuppression.from_config(
+            geometry.cfg.get("uma16_front_only", {}).get("direction_suppression", {})
+        )
         self.vision_result = None
         self.camera_photo = None
         self.classification = None
@@ -261,6 +268,58 @@ class TacticalGUI:
             padx=6, pady=2, command=self.on_apply_band, relief="flat",
         ).pack(side="right", padx=4)
 
+        suppression_row = tk.Frame(audio_settings, bg=PANEL)
+        suppression_row.pack(fill="x", pady=(4, 2))
+        self.var_suppress_enabled = tk.BooleanVar(value=self.suppression.enabled)
+        self.suppress_enable_button = tk.Checkbutton(
+            suppression_row,
+            text="Suppress Fixed Direction",
+            variable=self.var_suppress_enabled,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+            command=self.on_apply_suppression,
+        )
+        self.suppress_enable_button.pack(side="left")
+
+        suppression_values = tk.Frame(audio_settings, bg=PANEL)
+        suppression_values.pack(fill="x", pady=2)
+        tk.Label(suppression_values, text="Bearing:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_suppress_bearing = tk.StringVar(value=f"{self.suppression.bearing_deg:g}")
+        self.suppress_bearing_entry = tk.Entry(
+            suppression_values,
+            textvariable=self.var_suppress_bearing,
+            width=6,
+            bg="#0d1117",
+            fg=FG,
+            insertbackground=FG,
+        )
+        self.suppress_bearing_entry.pack(side="left", padx=(4, 8))
+        self.suppress_bearing_entry.bind("<Return>", lambda event: self.on_apply_suppression())
+        tk.Label(suppression_values, text="±°:", bg=PANEL, fg=FG).pack(side="left")
+        self.var_suppress_tolerance = tk.StringVar(value=f"{self.suppression.tolerance_deg:g}")
+        self.suppress_tolerance_entry = tk.Entry(
+            suppression_values,
+            textvariable=self.var_suppress_tolerance,
+            width=5,
+            bg="#0d1117",
+            fg=FG,
+            insertbackground=FG,
+        )
+        self.suppress_tolerance_entry.pack(side="left", padx=4)
+        self.suppress_tolerance_entry.bind("<Return>", lambda event: self.on_apply_suppression())
+        self.suppress_apply_button = tk.Button(
+            suppression_values,
+            text="Apply",
+            bg="#21262d",
+            fg=ACCENT,
+            relief="flat",
+            command=self.on_apply_suppression,
+        )
+        self.suppress_apply_button.pack(side="right", padx=4)
+
         camera_settings = tk.LabelFrame(settings, text=" Camera ", bg=PANEL, fg=FG, padx=6, pady=4)
         camera_settings.grid(row=0, column=1, sticky="nsew", padx=6, pady=4)
         camera_action_row = tk.Frame(camera_settings, bg=PANEL)
@@ -372,6 +431,7 @@ class TacticalGUI:
             activebackground=PANEL,
             activeforeground=FG,
         ).pack(anchor="w", pady=(4, 0))
+        self._update_suppression_controls()
 
     def _create_metric(self, parent: tk.Frame, title: str, init_val: str) -> tk.Label:
         box = tk.Frame(parent, bg=PANEL)
@@ -447,18 +507,25 @@ class TacticalGUI:
         result = self.vision.get_result()
         self.vision_result = result
         if result.error:
-            self.lbl_vision.configure(text="OFFLINE", fg=WARN)
+            tracker_error = result.error.startswith("Tracker error:")
+            self.lbl_vision.configure(text="TRACKER OFFLINE" if tracker_error else "OFFLINE", fg=WARN)
         elif result.timestamp == 0.0:
             self.lbl_vision.configure(text="CONNECTING", fg=MUTED)
         elif result.target is not None and result.direction is not None:
+            tracked = result.output_source == "tracker"
+            label = "DRONE TRACKING" if tracked else f"DRONE {result.best_confidence:.0%}"
             self.lbl_vision.configure(
-                text=f"DRONE {result.best_confidence:.0%} @ {result.direction.global_bearing_deg:.1f}°",
+                text=f"{label} @ {result.direction.global_bearing_deg:.1f}°",
                 fg=DRONE_RED,
             )
         elif result.target is not None:
-            self.lbl_vision.configure(text=f"DRONE {result.best_confidence:.0%} NO FOV", fg=DRONE_RED)
+            tracked = result.output_source == "tracker"
+            label = "DRONE TRACKING" if tracked else f"DRONE {result.best_confidence:.0%}"
+            self.lbl_vision.configure(text=f"{label} NO FOV", fg=DRONE_RED)
         elif result.detections:
             self.lbl_vision.configure(text=f"ACQUIRING {result.best_confidence:.0%}", fg=UNKNOWN_AMBER)
+        elif result.tracking_state == "search":
+            self.lbl_vision.configure(text="SEARCHING", fg=UNKNOWN_AMBER)
         else:
             self.lbl_vision.configure(text="CLEAR", fg=OK)
 
@@ -489,6 +556,54 @@ class TacticalGUI:
         self.classification = None
         self.signal_detected = False
         self.last_classification = 0.0
+
+    def _update_suppression_controls(self):
+        state = "normal" if self.var_uma16_front_only.get() else "disabled"
+        for widget in (
+            self.suppress_enable_button,
+            self.suppress_bearing_entry,
+            self.suppress_tolerance_entry,
+            self.suppress_apply_button,
+        ):
+            widget.configure(state=state)
+
+    def _configured_suppression(self):
+        return DirectionSuppression(
+            enabled=self.var_suppress_enabled.get(),
+            bearing_deg=float(self.var_suppress_bearing.get()),
+            tolerance_deg=float(self.var_suppress_tolerance.get()),
+            max_peak_candidates=self.suppression.max_peak_candidates,
+        )
+
+    def _current_suppression(self):
+        try:
+            configured = self._configured_suppression()
+        except ValueError:
+            configured = self.suppression
+        return replace(
+            configured,
+            enabled=configured.enabled and self.var_uma16_front_only.get(),
+        )
+
+    def on_apply_suppression(self):
+        if not self.var_uma16_front_only.get():
+            return
+        try:
+            self.suppression = self._configured_suppression()
+        except ValueError as exc:
+            self.status_lbl.configure(text=f"INVALID SUPPRESSION: {exc}", fg=WARN, bg="#2b2010")
+            return
+        self.doa_engines["left"].reset()
+        self.save_config()
+        self.status_lbl.configure(
+            text=(
+                f"SUPPRESSION {self.suppression.bearing_deg:.1f}° ± {self.suppression.tolerance_deg:.1f}°"
+                if self.suppression.enabled
+                else "FIXED DIRECTION SUPPRESSION OFF"
+            ),
+            fg=ACCENT,
+            bg="#1a2733",
+        )
 
     def on_toggle_sim(self):
         self.simulate = self.var_sim.get()
@@ -524,6 +639,7 @@ class TacticalGUI:
             self.var_front_only.set(False)
             self.var_left_only.set(False)
 
+        self._update_suppression_controls()
         self.geo.set_uma16_front_only(self.var_uma16_front_only.get())
         arr = self.geo.arrays["left"]
         self.doa_engines["left"] = ArrayDOA(
@@ -596,6 +712,13 @@ class TacticalGUI:
                 self.geo.cfg["arrays"]["left"]["device_index"] = int(self.var_dev_left.get().strip())
             if self.vision is not None:
                 self.geo.cfg.setdefault("vision", {})["camera"] = self.var_camera.get().strip()
+            suppression = self._configured_suppression()
+            self.geo.cfg.setdefault("uma16_front_only", {})["direction_suppression"] = {
+                "enabled": suppression.enabled,
+                "bearing_deg": suppression.bearing_deg,
+                "tolerance_deg": suppression.tolerance_deg,
+                "max_peak_candidates": suppression.max_peak_candidates,
+            }
             with open(self.geo.config_path, "w") as f:
                 json.dump(self.geo.cfg, f, indent=2)
         except Exception:
@@ -626,6 +749,20 @@ class TacticalGUI:
         det_block = blocks.get("front", next(iter(blocks.values())))
         det_ch = det_block[:, 0]
         det_res = self.detector.process(det_ch, low, high)
+        front_doa = None
+        if self.var_uma16_front_only.get():
+            selection = select_front_only_target(
+                det_res,
+                blocks["left"],
+                self.doa_engines["left"],
+                (low, high),
+                self._current_suppression(),
+            )
+            det_res = selection.detection
+            if selection.suppressed:
+                self._show_suppressed_target(det_res)
+                return
+            front_doa = selection.doa
         self.signal_detected = det_res.detected
 
         now = time.monotonic()
@@ -646,7 +783,11 @@ class TacticalGUI:
             if arr_id in blocks:
                 doa_eng = self.doa_engines[arr_id]
                 target_f = det_res.peak_freq if det_res.detected else None
-                res = doa_eng.estimate(blocks[arr_id], target_freq=target_f, band=(low, high))
+                res = front_doa if arr_id == "left" and front_doa is not None else doa_eng.estimate(
+                    blocks[arr_id],
+                    target_freq=target_f,
+                    band=(low, high),
+                )
                 doa_results[arr_id] = res
                 bearings[arr_id] = res.global_angle_deg
                 prominences[arr_id] = res.prominence
@@ -654,6 +795,19 @@ class TacticalGUI:
 
         single_array_id = selected_ids[0] if len(selected_ids) == 1 else None
         single_doa = doa_results.get(single_array_id) if single_array_id else None
+        if det_res.detected and self.var_uma16_front_only.get() and not displayable_doa(
+            single_doa,
+            self._current_suppression(),
+        ):
+            hidden = replace(
+                det_res,
+                detected=False,
+                peak_freq=None,
+                peak_db=None,
+                peak_candidates=(),
+            )
+            self._show_suppressed_target(hidden)
+            return
         if single_doa is not None or not det_res.detected:
             tri_res = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
         else:
@@ -668,6 +822,18 @@ class TacticalGUI:
         self._draw_spectrum(det_res)
         self._draw_tactical_map(tri_res, single_doa if det_res.detected else None, single_array_id)
         self._draw_direction_3d(single_doa, single_array_id)
+
+    def _show_suppressed_target(self, detection):
+        self._reset_classifier()
+        self._update_classification_metric()
+        self._clear_target_telemetry()
+        self.lbl_freq.configure(text="---.- Hz", fg=MUTED)
+        self.lbl_level.configure(text="---.- dBFS", fg=MUTED)
+        self.status_lbl.configure(text="FIXED DIRECTION SUPPRESSED", fg=MUTED, bg="#1a2733")
+        empty_tri = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
+        self._draw_spectrum(detection)
+        self._draw_tactical_map(empty_tri, None, "left")
+        self._draw_direction_3d(None, "left")
 
     def _update_classification_metric(self):
         result = self.classification
@@ -974,6 +1140,45 @@ class TacticalGUI:
             else:
                 c.create_rectangle(cx - 10, cy - 10, cx + 10, cy + 10, fill=col, outline="#ffffff")
                 c.create_text(cx, cy + 16, text=f"{arr.name} ({len(arr.mic_positions)} mics)", fill=col, font=("Helvetica", 7))
+
+        suppression = self._current_suppression()
+        if suppression.enabled:
+            origin = to_canvas(*self.geo.arrays["left"].center)
+            for boundary in (
+                suppression.bearing_deg - suppression.tolerance_deg,
+                suppression.bearing_deg + suppression.tolerance_deg,
+            ):
+                angle = np.deg2rad(boundary)
+                endpoint = (
+                    origin[0] + 1.8 * self.map_scale * np.sin(angle),
+                    origin[1] - 1.8 * self.map_scale * np.cos(angle),
+                )
+                c.create_line(
+                    *origin,
+                    *endpoint,
+                    fill=SUPPRESSION_MAGENTA,
+                    width=1,
+                    dash=(3, 5),
+                )
+            angle = np.deg2rad(suppression.bearing_deg)
+            endpoint = (
+                origin[0] + 2.0 * self.map_scale * np.sin(angle),
+                origin[1] - 2.0 * self.map_scale * np.cos(angle),
+            )
+            c.create_line(
+                *origin,
+                *endpoint,
+                fill=SUPPRESSION_MAGENTA,
+                width=3,
+                dash=(8, 4),
+            )
+            c.create_text(
+                endpoint[0],
+                endpoint[1] - 10,
+                text=f"SUPPRESSED {suppression.bearing_deg:.0f}° ±{suppression.tolerance_deg:.0f}°",
+                fill=SUPPRESSION_MAGENTA,
+                font=("Helvetica", 9, "bold"),
+            )
 
         if single_doa is not None and single_doa.global_angle_deg is not None and (single_doa.prominence >= 1.4 or single_doa.stable):
             arr = self.geo.arrays[single_array_id]

@@ -268,15 +268,18 @@ class ArrayDOA:
         target_freq: Optional[float] = None,
         target_bandwidth_hz: float = 60.0,
         band: Optional[Tuple[float, float]] = None,
+        track: bool = True,
     ) -> DOAResult:
         """Estimate DOA. Fully controlled by GUI band [low, high] or specific target_freq."""
         if target_freq is not None and target_freq > self.max_direction_freq_hz:
-            self.tracker.reset()
-            self.elevation_tracker.reset()
+            if track:
+                self.tracker.reset()
+                self.elevation_tracker.reset()
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
         if target_freq is None and band is not None and band[0] > self.max_direction_freq_hz:
-            self.tracker.reset()
-            self.elevation_tracker.reset()
+            if track:
+                self.tracker.reset()
+                self.elevation_tracker.reset()
             return DOAResult(self.array_id, None, None, 0.0, 0.0, None, "spatial_aliasing")
 
         # Dynamically adapt frequency band from GUI band or detected target_freq
@@ -362,10 +365,11 @@ class ArrayDOA:
         prominence = float((p.max() - np.median(p)) / (np.std(p) + 1e-12))
 
         # Add to circular tracker
-        self.tracker.add(local_angle, prominence)
-        smooth_local = self.tracker.angle if self.tracker.ready else local_angle
-        confidence = self.tracker.confidence if self.tracker.ready else 0.5
-        stable = self.mount == "vertical" and self.tracker.ready and confidence >= 0.85
+        if track:
+            self.tracker.add(local_angle, prominence)
+        smooth_local = self.tracker.angle if track and self.tracker.ready else local_angle
+        confidence = self.tracker.confidence if track and self.tracker.ready else 0.5
+        stable = track and self.mount == "vertical" and self.tracker.ready and confidence >= 0.85
 
         # Global bearing (relative to rig nose / +Y)
         global_angle = (smooth_local + self.orientation_deg) % 360.0
@@ -383,16 +387,17 @@ class ArrayDOA:
                 steer_sel,
                 peak_idx,
             )
-            self.elevation_tracker.add(raw_elevation, elevation_prominence)
+            if track:
+                self.elevation_tracker.add(raw_elevation, elevation_prominence)
             smooth_elevation = (
                 self.elevation_tracker.angle
-                if self.elevation_tracker.ready
+                if track and self.elevation_tracker.ready
                 else raw_elevation
             )
             elevation_confidence = (
-                self.elevation_tracker.confidence if self.elevation_tracker.ready else 0.5
+                self.elevation_tracker.confidence if track and self.elevation_tracker.ready else 0.5
             )
-            elevation_stable = self.elevation_tracker.ready and elevation_confidence >= 0.85
+            elevation_stable = track and self.elevation_tracker.ready and elevation_confidence >= 0.85
             if elevation_prominence >= 1.4 or elevation_stable:
                 elevation = float(smooth_elevation)
                 azimuth_rad = np.deg2rad(global_angle)

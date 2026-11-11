@@ -21,6 +21,7 @@ class DetectionResult:
     band: Tuple[float, float]
     freqs: np.ndarray
     mags: np.ndarray
+    peak_candidates: Tuple[Tuple[float, float], ...] = ()
 
 
 class FrequencyDetector:
@@ -56,13 +57,7 @@ class FrequencyDetector:
         if average_blocks is not None:
             self.average_blocks = max(1, int(average_blocks))
 
-    def _parabolic_peak(self, mags: np.ndarray, low_hz: float, high_hz: float) -> Tuple[Optional[float], Optional[float]]:
-        """Refines peak frequency using 3-bin parabolic interpolation."""
-        mask = (self.freqs >= low_hz) & (self.freqs <= high_hz)
-        if not np.any(mask):
-            return None, None
-        indices = np.flatnonzero(mask)
-        best_idx = indices[np.argmax(mags[indices])]
+    def _refine_peak(self, mags: np.ndarray, best_idx: int) -> Tuple[float, float]:
         offset = 0.0
         if 0 < best_idx < len(mags) - 1:
             a, b, c = mags[best_idx - 1], mags[best_idx], mags[best_idx + 1]
@@ -72,6 +67,30 @@ class FrequencyDetector:
                 offset = max(-1.0, min(1.0, offset))
         peak_freq = self.freqs[best_idx] + offset * self.bin_width
         return float(peak_freq), float(mags[best_idx])
+
+    def _parabolic_peak(self, mags: np.ndarray, low_hz: float, high_hz: float) -> Tuple[Optional[float], Optional[float]]:
+        """Refines peak frequency using 3-bin parabolic interpolation."""
+        mask = (self.freqs >= low_hz) & (self.freqs <= high_hz)
+        if not np.any(mask):
+            return None, None
+        indices = np.flatnonzero(mask)
+        best_idx = indices[np.argmax(mags[indices])]
+        return self._refine_peak(mags, best_idx)
+
+    def _candidate_peaks(self, mags: np.ndarray, low_hz: float, high_hz: float):
+        mask = (self.freqs >= low_hz) & (self.freqs <= high_hz)
+        indices = np.flatnonzero(mask)
+        if not len(indices):
+            return ()
+        best_idx = indices[np.argmax(mags[indices])]
+        peak_indices = [best_idx]
+        for position, index in enumerate(indices):
+            left = mags[indices[position - 1]] if position > 0 else -np.inf
+            right = mags[indices[position + 1]] if position + 1 < len(indices) else -np.inf
+            if mags[index] > left and mags[index] >= right and index != best_idx:
+                peak_indices.append(index)
+        peak_indices.sort(key=lambda index: mags[index], reverse=True)
+        return tuple(self._refine_peak(mags, index) for index in peak_indices)
 
     def process(
         self,
@@ -97,6 +116,7 @@ class FrequencyDetector:
 
         peak_freq, peak_db = self._parabolic_peak(mags, low_hz, high_hz)
         detected = (peak_db is not None) and (peak_db >= self.threshold_dbfs)
+        candidates = self._candidate_peaks(mags, low_hz, high_hz)
 
         return DetectionResult(
             detected=detected,
@@ -106,6 +126,7 @@ class FrequencyDetector:
             band=(low_hz, high_hz),
             freqs=self.freqs,
             mags=mags,
+            peak_candidates=candidates,
         )
 
     def reset(self):

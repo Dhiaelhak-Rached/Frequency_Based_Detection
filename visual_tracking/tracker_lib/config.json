@@ -1,0 +1,9 @@
+{
+  "dyhit_repo": "external/HiT",
+  "dyhit_config": "stage2",
+  "dyhit_ckpt": "trackers/dyhit/models/DyHiT_ep0060.pth.tar",
+  "dyhit_device": "auto",
+  "lost_score": {
+    "dyhit": null
+  }
+}

@@ -13,11 +13,19 @@
     "uma16_length_m": 0.126
   },
   "default_detection": {
-    "target_low_hz": 1000.0,
-    "target_high_hz": 1100.0,
+    "target_low_hz": 200.0,
+    "target_high_hz": 5000.0,
     "threshold_dbfs": -70.0,
     "block_duration": 0.2,
     "average_blocks": 4
+  },
+  "uma16_front_only": {
+    "direction_suppression": {
+      "enabled": true,
+      "bearing_deg": 60.0,
+      "tolerance_deg": 10.0,
+      "max_peak_candidates": 4
+    }
   },
   "classifier": {
     "enabled": true,
@@ -33,7 +41,7 @@
   "vision": {
     "enabled": true,
     "model_path": "model/Yolo/best.pt",
-    "camera": "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0",
+    "camera": "/dev/video0",
     "horizontal_fov_deg": 75.0,
     "camera_fovs": {
       "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0
@@ -43,7 +51,23 @@
     "inference_hz": 10.0,
     "max_target_step_px": 120.0,
     "confirmation_frames": 3,
-    "lost_timeout_s": 0.75
+    "lost_timeout_s": 0.75,
+    "tracker": {
+      "enabled": true,
+      "name": "dyhit",
+      "library_path": "visual_tracking/tracker_lib",
+      "checkpoint_path": "visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar",
+      "device": "auto",
+      "detector_every": 5,
+      "verify_iou": 0.3,
+      "reacquire_gate": 1.5,
+      "lost_after_s": 0.5,
+      "trust_tracker_s": 2.0,
+      "search_growth": 200.0,
+      "stamp_tolerance": 0.02,
+      "max_catch_up": 3,
+      "buffer_size": 60
+    }
   },
   "arrays": {
     "front": {

@@ -48,6 +48,10 @@ class VisionResult:
     direction: Optional[CameraDirection] = None
     timestamp: float = 0.0
     error: Optional[str] = None
+    tracking_state: Optional[str] = None
+    tracking_event: Optional[str] = None
+    output_source: str = "yolo"
+    last_yolo_confidence: Optional[float] = None
 
     @property
     def best_confidence(self) -> float:
@@ -288,7 +292,7 @@ class DroneCamera:
         with self._lock:
             return self._result
 
-    def process_frame(self, frame: np.ndarray) -> VisionResult:
+    def _detect_drones(self, frame: np.ndarray):
         self._load_model()
         names = self._model.names
         drone_class_ids = {
@@ -323,8 +327,10 @@ class DroneCamera:
                             label=str(names[class_id]),
                         )
                     )
+        return tuple(detections)
 
-        detections = tuple(detections)
+    def process_frame(self, frame: np.ndarray) -> VisionResult:
+        detections = self._detect_drones(frame)
         timestamp = time.monotonic()
         target = self.target_lock.select(detections, timestamp)
         direction = None
