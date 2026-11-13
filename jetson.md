@@ -258,6 +258,7 @@ These are controlled moving-target measurements with real YOLO and DyHiT models,
 - Orin before separate CUDA streams: tracker p95 `63.34 ms`, output p95 `64.77 ms`.
 - Orin with separate YOLO/tracker CUDA streams: tracker p95 `50.57 ms`, output p95 `52.25 ms`; output target met, tracker p95 target not met.
 - Orin DyHiT alone: mean `29.87 ms`, p95 `33.26 ms`, approximately 30 FPS.
+- Orin 15-minute controlled run: `12,301` tracked frames, final output p95 `55.50 ms`, bounded detector queue, zero stale detections, and `68` observed losses each followed by reacquisition. The real RTSP camera also rendered in the Jetson GUI in `SEARCHING` state.
 
 The upstream repository references a DyHiT TensorRT adapter but does not include it in the pinned tree. Do not claim TensorRT integration or a 100% hardware guarantee. Further optimization requires a separately implemented and validated engine.
 

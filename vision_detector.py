@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 import re
+import socket
 import threading
 import time
 from typing import Optional, Sequence, Tuple, Union
@@ -384,8 +385,17 @@ class DroneCamera:
         if self._capture_factory is not None:
             return self._capture_factory(self.camera)
         if isinstance(self.camera, str) and self.camera.startswith("/dev/"):
-            return cv2.VideoCapture(self.camera, cv2.CAP_V4L2)
-        return cv2.VideoCapture(self.camera)
+            cap = cv2.VideoCapture(self.camera, cv2.CAP_V4L2)
+        else:
+            cap = cv2.VideoCapture(self.camera)
+        if not cap.isOpened() and self.camera in ("/dev/video0", 0, "0"):
+            cap.release()
+            try:
+                with socket.create_connection(("127.0.0.1", 8554), timeout=0.25):
+                    return cv2.VideoCapture("rtsp://127.0.0.1:8554/drone")
+            except OSError:
+                pass
+        return cap
 
     def _release_capture(self):
         capture = self._capture

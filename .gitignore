@@ -3,3 +3,4 @@ __pycache__/
 *$py.class
 .DS_Store
 *.log
+visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar

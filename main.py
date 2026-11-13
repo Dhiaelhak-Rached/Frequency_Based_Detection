@@ -19,10 +19,13 @@ Usage:
 """
 
 import argparse
+import base64
+import json
 from pathlib import Path
 import time
 import tkinter as tk
 
+import cv2
 import numpy as np
 
 from geometry import RigGeometry, vector_to_bearing
@@ -34,6 +37,7 @@ from audio_manager import MultiDeviceAudioManager
 from classifier import DroneClassifier
 from vision_detector import DroneCamera, discover_cameras, normalize_camera_source
 from tracked_camera import TrackedDroneCamera
+from target_state_machine import StateMachineConfig, TargetStateMachine, format_fused_state
 
 
 def resolve_config_path(geo, value):
@@ -247,6 +251,8 @@ def parse_args():
     add_classifier_arguments(pc)
     add_vision_arguments(pc)
     add_suppression_arguments(pc)
+    pc.add_argument("--stream-json", action="store_true", help="emit machine-readable @JSON telemetry lines")
+    pc.add_argument("--stream-video", action="store_true", help="include JPEG camera preview in --stream-json")
 
     # 3. Simulate
     ps = sub.add_parser("simulate", help="run offline math verification benchmark")
@@ -342,6 +348,143 @@ def cmd_gui(args):
     root.mainloop()
 
 
+def build_telemetry_payload(
+    fused,
+    det_res=None,
+    single_doa=None,
+    single_id=None,
+    tri=None,
+    classification=None,
+    classifier=None,
+    vision_res=None,
+    vision=None,
+    suppression=None,
+    doa_errors=None,
+    array_mode="dual",
+    suppressed=False,
+    audio_waiting=False,
+    stream_video=False,
+):
+    """Build a compact JSON-serializable telemetry dict for remote GUI streaming."""
+    det_payload = None
+    if det_res is not None:
+        max_f = min(max(float(det_res.band[1]) * 1.4, 3000.0), 16000.0)
+        freqs = np.asarray(det_res.freqs, dtype=float)
+        mags = np.asarray(det_res.mags, dtype=float)
+        mask = freqs <= max_f
+        freqs = freqs[mask]
+        mags = mags[mask]
+        step = max(1, len(freqs) // 120)
+        det_payload = {
+            "detected": bool(det_res.detected) and not suppressed,
+            "peak_freq": None if suppressed or det_res.peak_freq is None else round(float(det_res.peak_freq), 2),
+            "peak_db": None if suppressed or det_res.peak_db is None else round(float(det_res.peak_db), 2),
+            "threshold_db": round(float(det_res.threshold_db), 2),
+            "band": [float(det_res.band[0]), float(det_res.band[1])],
+            "freqs": [round(float(x), 1) for x in freqs[::step]],
+            "mags": [round(float(x), 1) for x in mags[::step]],
+        }
+
+    cam_status = "OFF"
+    frame_b64 = None
+    v_bearing = None
+    v_el = None
+    v_target = False
+    v_uncal = False
+    if vision is not None:
+        if vision_res is None:
+            cam_status = "CONNECTING"
+        elif vision_res.error:
+            cam_status = "OFFLINE"
+        else:
+            v_target = vision_res.target is not None
+            if vision_res.direction is not None:
+                v_bearing = round(float(vision_res.direction.global_bearing_deg), 2)
+                v_el = round(float(vision_res.direction.elevation_deg), 2)
+            elif v_target:
+                v_uncal = True
+            if vision_res.tracking_state == "track":
+                cam_status = "DRONE TRACKING"
+            elif v_target:
+                cam_status = f"DRONE ({vision_res.best_confidence:.0%})"
+            else:
+                cam_status = "SEARCHING"
+            if stream_video and vision_res.frame is not None:
+                thumb = cv2.resize(vision_res.frame, (384, 216), interpolation=cv2.INTER_AREA)
+                ok, buf = cv2.imencode(".jpg", thumb, [int(cv2.IMWRITE_JPEG_QUALITY), 60])
+                if ok:
+                    frame_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+
+    return {
+        "type": "telemetry",
+        "audio_waiting": bool(audio_waiting),
+        "suppressed": bool(suppressed),
+        "array_mode": array_mode,
+        "fused": {
+            "mode": fused.mode.value,
+            "source": fused.active_source,
+            "bearing_deg": None if fused.bearing_deg is None else round(float(fused.bearing_deg), 2),
+            "elevation_deg": None if fused.elevation_deg is None else round(float(fused.elevation_deg), 2),
+            "direction_vector": (
+                None if fused.direction_vector is None
+                else [round(float(v), 4) for v in fused.direction_vector]
+            ),
+            "vision_uncalibrated": bool(fused.vision_uncalibrated),
+        },
+        "detection": det_payload,
+        "classification": {
+            "text": format_classification(classification, classifier, bool(det_res and det_res.detected and not suppressed)),
+            "is_drone": bool(classification is not None and classification.is_drone),
+        },
+        "camera": {
+            "status": cam_status,
+            "target_detected": v_target,
+            "bearing_deg": v_bearing,
+            "elevation_deg": v_el,
+            "uncalibrated": v_uncal,
+            "frame_jpg_b64": frame_b64,
+        },
+        "single_doa": (
+            None
+            if single_doa is None
+            else {
+                "array_id": single_id,
+                "global_angle_deg": None if single_doa.global_angle_deg is None else round(float(single_doa.global_angle_deg), 2),
+                "elevation_deg": None if single_doa.elevation_deg is None else round(float(single_doa.elevation_deg), 2),
+                "direction_vector": (
+                    None if single_doa.direction_vector is None
+                    else [round(float(v), 4) for v in single_doa.direction_vector]
+                ),
+                "prominence": round(float(single_doa.prominence), 2),
+                "stable": bool(single_doa.stable),
+                "error": single_doa.error,
+            }
+        ),
+        "triangulation": (
+            None
+            if tri is None
+            else {
+                "success": bool(tri.success),
+                "x": None if tri.x is None else round(float(tri.x), 3),
+                "y": None if tri.y is None else round(float(tri.y), 3),
+                "range_m": None if tri.range_m is None else round(float(tri.range_m), 3),
+                "bearing_deg": None if tri.bearing_deg is None else round(float(tri.bearing_deg), 2),
+                "bearings": {k: round(float(v[1]), 2) for k, v in tri.rays.items()},
+            }
+        ),
+        "suppression": (
+            None
+            if suppression is None
+            else {
+                "enabled": bool(suppression.enabled),
+                "bearing_deg": float(suppression.bearing_deg),
+                "tolerance_deg": float(suppression.tolerance_deg),
+            }
+        ),
+        "doa_errors": doa_errors or {},
+    }
+
+
 def cmd_cli(args):
     geo = RigGeometry()
     if args.uma16_front_only:
@@ -425,23 +568,47 @@ def cmd_cli(args):
 
     if vision is not None:
         vision.start()
+    state_machine = TargetStateMachine(
+        StateMachineConfig(require_drone_for_audio=args.require_drone)
+    )
+    array_mode = (
+        "uma8_only" if args.uma8_only
+        else "uma16_only" if args.uma16_only
+        else "uma16_front_only" if args.uma16_front_only
+        else "dual"
+    )
+    stream_json = bool(getattr(args, "stream_json", False))
+    stream_video = bool(getattr(args, "stream_video", False))
+
     audio_mgr.start(device_map=dev_map if dev_map else None, array_ids=selected_ids)
     try:
         while True:
-            if vision is not None:
-                vision_now = time.monotonic()
-                if vision_now - last_vision_report >= 1.0:
-                    print(f"[{format_vision(vision.get_result(), vision)}]", flush=True)
-                    last_vision_report = vision_now
+            now = time.monotonic()
+            vision_res = vision.get_result() if vision is not None else None
             blocks = audio_mgr.get_latest_blocks()
             if not blocks:
-                time.sleep(0.05)
+                fused = state_machine.from_pipeline_outputs(now=now, vision=vision_res)
+                if stream_json:
+                    payload = build_telemetry_payload(
+                        fused,
+                        vision_res=vision_res,
+                        vision=vision,
+                        suppression=suppression if args.uma16_front_only else None,
+                        array_mode=array_mode,
+                        audio_waiting=True,
+                        stream_video=stream_video,
+                    )
+                    print("@JSON:" + json.dumps(payload, separators=(",", ":")), flush=True)
+                else:
+                    print(format_fused_state(fused) + "\n", flush=True)
+                time.sleep(0.1)
                 continue
 
             det_block = blocks.get("front", next(iter(blocks.values())))
             det_channel = det_block[:, 0]
             det_res = detector.process(det_channel, args.low, args.high)
             front_doa = None
+            suppressed = False
             if args.uma16_front_only:
                 selection = select_front_only_target(
                     det_res,
@@ -450,32 +617,30 @@ def cmd_cli(args):
                     (args.low, args.high),
                     suppression,
                 )
+                det_res = selection.detection
                 if selection.suppressed:
                     if classifier is not None:
                         classifier.reset()
                     classification = None
                     last_classification = 0.0
-                    print("[FIXED DIRECTION SUPPRESSED]", flush=True)
-                    time.sleep(0.1)
-                    continue
-                det_res = selection.detection
-                front_doa = selection.doa
+                    suppressed = True
+                else:
+                    front_doa = selection.doa
 
-            now = time.monotonic()
-            classification_updated = False
-            if not det_res.detected:
-                if classifier is not None:
-                    classifier.reset()
-                classification = None
-                last_classification = 0.0
-            elif classifier is not None and now - last_classification >= classifier_hop:
-                classification = classifier.classify(det_channel)
-                last_classification = now
-                classification_updated = True
-            class_text = format_classification(classification, classifier, det_res.detected)
-            drone_confirmed = det_res.detected and classification is not None and classification.is_drone
+            if not suppressed:
+                if not det_res.detected:
+                    if classifier is not None:
+                        classifier.reset()
+                    classification = None
+                    last_classification = 0.0
+                elif classifier is not None and now - last_classification >= classifier_hop:
+                    classification = classifier.classify(det_channel)
+                    last_classification = now
 
-            if det_res.detected:
+            single_doa = None
+            tri = None
+            doa_errors = {}
+            if not suppressed and det_res.detected:
                 bearings = {}
                 proms = {}
                 results = {}
@@ -489,72 +654,49 @@ def cmd_cli(args):
                         results[arr_id] = res
                         bearings[arr_id] = res.global_angle_deg
                         proms[arr_id] = res.prominence
+                        if res.error:
+                            doa_errors[arr_id] = res.error
 
                 if single_id:
-                    single = results[single_id]
-                    array_label = "UMA-8" if single_id == "front" else "UMA-16"
-                    elevation_text = f" | {format_elevation(single)}" if single_id == "left" else ""
-                    if not displayable_doa(single, suppression):
-                        print("[FIXED DIRECTION SUPPRESSED]", flush=True)
-                        time.sleep(0.1)
-                        continue
-                    if single.global_angle_deg is not None and (single.prominence >= 1.4 or single.stable):
-                        status = f"{array_label} BEARING"
-                        if args.require_drone and not drone_confirmed:
-                            status += " / DRONE ID REQUIRED"
-                        print(
-                            f"[{status}] {single.global_angle_deg:5.1f}° | "
-                            f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                            f"Direction only{elevation_text} | {class_text}",
-                            flush=True,
-                        )
-                    elif single.error == "spatial_aliasing":
-                        print(
-                            f"[DOA BLOCKED] {det_res.peak_freq:6.1f}Hz exceeds "
-                            f"{doa_engines[single_id].max_direction_freq_hz:.0f}Hz safe direction limit | {class_text}",
-                            flush=True,
-                        )
-                    else:
-                        print(
-                            f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz | "
-                            f"Waiting reliable {array_label} bearing | {class_text}",
-                            flush=True,
-                        )
-                    time.sleep(0.1)
-                    continue
-
-                tri = triangulator.triangulate(
-                    bearings,
-                    proms,
-                    stable={arr_id: res.stable for arr_id, res in results.items()},
-                )
-                if tri.success and tri.x is not None:
-                    if args.require_drone and not drone_confirmed:
-                        status = "ACOUSTIC SOURCE - DRONE ID REQUIRED"
-                    elif drone_confirmed:
-                        status = "TARGET LOCKED - DRONE CONFIRMED"
-                    else:
-                        status = "TARGET LOCKED - UNKNOWN/NON-DRONE"
-                    print(
-                        f"[{status}] (X: {tri.x:+5.2f}m, Y: {tri.y:+5.2f}m) | "
-                        f"Range: {tri.range_m:4.2f}m | Bearing: {tri.bearing_deg:5.1f}° | "
-                        f"Freq: {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                        f"Rays: {tri.active_rays}/{len(selected_ids)} | {class_text}",
-                        flush=True,
-                    )
+                    single_doa = results.get(single_id)
+                    if single_doa is not None and not displayable_doa(single_doa, suppression):
+                        suppressed = True
                 else:
-                    b_str = " ".join(f"{k}:{v:.0f}°" for k, v in bearings.items() if v is not None)
-                    print(
-                        f"[FREQ DETECTED] {det_res.peak_freq:6.1f}Hz ({det_res.peak_db:5.1f} dBFS) | "
-                        f"Bearings: [{b_str}] | Waiting line intersection | {class_text}",
-                        flush=True,
+                    tri = triangulator.triangulate(
+                        bearings,
+                        proms,
+                        stable={arr_id: res.stable for arr_id, res in results.items()},
                     )
-            elif classification_updated:
-                print(
-                    f"[SCANNING] {class_text} | Peak: {det_res.peak_freq:6.1f}Hz "
-                    f"({det_res.peak_db:5.1f} dBFS)",
-                    flush=True,
+
+            fused = state_machine.from_pipeline_outputs(
+                now=now,
+                vision=vision_res,
+                detection=det_res,
+                single_doa=single_doa,
+                triangulation=tri,
+                classification=classification,
+                suppressed=suppressed,
+            )
+            if stream_json:
+                payload = build_telemetry_payload(
+                    fused,
+                    det_res=det_res,
+                    single_doa=single_doa,
+                    single_id=single_id,
+                    tri=tri,
+                    classification=classification,
+                    classifier=classifier,
+                    vision_res=vision_res,
+                    vision=vision,
+                    suppression=suppression if args.uma16_front_only else None,
+                    doa_errors=doa_errors,
+                    array_mode=array_mode,
+                    suppressed=suppressed,
+                    stream_video=stream_video,
                 )
+                print("@JSON:" + json.dumps(payload, separators=(",", ":")), flush=True)
+            else:
+                print(format_fused_state(fused) + "\n", flush=True)
             time.sleep(0.1)
 
     except KeyboardInterrupt:
