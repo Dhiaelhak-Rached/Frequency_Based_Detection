@@ -115,6 +115,7 @@ def create_vision(
         return None
     configured_model = model_path or cfg.get("model_path", "model/Yolo/best.pt")
     selected_camera = camera if camera is not None else cfg.get("camera", "0")
+    configured_camera = str(normalize_camera_source(cfg.get("camera", "0")))
     camera_key = str(normalize_camera_source(selected_camera))
     camera_fovs = cfg.get("camera_fovs", {})
     if camera_fov is not None:
@@ -122,7 +123,11 @@ def create_vision(
     elif camera_key in camera_fovs:
         horizontal_fov = camera_fovs[camera_key]
     else:
-        horizontal_fov = cfg.get("horizontal_fov_deg") if camera is None else None
+        horizontal_fov = (
+            cfg.get("horizontal_fov_deg")
+            if camera is None or camera_key == configured_camera
+            else None
+        )
     common = dict(
         model_path=resolve_config_path(geo, configured_model),
         camera=selected_camera,
@@ -348,6 +353,32 @@ def cmd_gui(args):
     root.mainloop()
 
 
+def build_guidance_payload(
+    array_mode,
+    audio_block=None,
+    doa=None,
+    suppressed=False,
+    mount_calibration_id=None,
+):
+    if array_mode != "uma16_front_only" or audio_block is None:
+        return None
+    return {
+        "array_id": "left",
+        "array_mode": array_mode,
+        "mount_calibration_id": mount_calibration_id,
+        "captured_at": float(audio_block.captured_at),
+        "sequence": int(audio_block.sequence),
+        "azimuth_deg": None if doa is None else doa.global_angle_deg,
+        "elevation_deg": None if doa is None else doa.elevation_deg,
+        "azimuth_prominence": 0.0 if doa is None else float(doa.prominence),
+        "elevation_prominence": 0.0 if doa is None else float(doa.elevation_prominence),
+        "azimuth_stable": bool(doa is not None and doa.stable),
+        "elevation_stable": bool(doa is not None and doa.elevation_stable),
+        "error": None if doa is None else doa.error,
+        "suppressed": bool(suppressed),
+    }
+
+
 def build_telemetry_payload(
     fused,
     det_res=None,
@@ -364,6 +395,8 @@ def build_telemetry_payload(
     suppressed=False,
     audio_waiting=False,
     stream_video=False,
+    guidance_audio_block=None,
+    mount_calibration_id=None,
 ):
     """Build a compact JSON-serializable telemetry dict for remote GUI streaming."""
     det_payload = None
@@ -417,6 +450,7 @@ def build_telemetry_payload(
 
     return {
         "type": "telemetry",
+        "emitted_at": round(float(time.monotonic()), 6),
         "audio_waiting": bool(audio_waiting),
         "suppressed": bool(suppressed),
         "array_mode": array_mode,
@@ -430,6 +464,7 @@ def build_telemetry_payload(
                 else [round(float(v), 4) for v in fused.direction_vector]
             ),
             "vision_uncalibrated": bool(fused.vision_uncalibrated),
+            "reason": fused.reason,
         },
         "detection": det_payload,
         "classification": {
@@ -442,6 +477,7 @@ def build_telemetry_payload(
             "bearing_deg": v_bearing,
             "elevation_deg": v_el,
             "uncalibrated": v_uncal,
+            "timestamp": None if vision_res is None else round(float(vision_res.timestamp), 6),
             "frame_jpg_b64": frame_b64,
         },
         "single_doa": (
@@ -482,6 +518,13 @@ def build_telemetry_payload(
             }
         ),
         "doa_errors": doa_errors or {},
+        "guidance": build_guidance_payload(
+            array_mode=array_mode,
+            audio_block=guidance_audio_block,
+            doa=single_doa,
+            suppressed=suppressed,
+            mount_calibration_id=mount_calibration_id,
+        ),
     }
 
 
@@ -605,14 +648,14 @@ def cmd_cli(args):
                 continue
 
             det_block = blocks.get("front", next(iter(blocks.values())))
-            det_channel = det_block[:, 0]
+            det_channel = det_block.samples[:, 0]
             det_res = detector.process(det_channel, args.low, args.high)
             front_doa = None
             suppressed = False
             if args.uma16_front_only:
                 selection = select_front_only_target(
                     det_res,
-                    blocks["left"],
+                    blocks["left"].samples,
                     doa_engines["left"],
                     (args.low, args.high),
                     suppression,
@@ -647,7 +690,7 @@ def cmd_cli(args):
                 for arr_id, doa in doa_engines.items():
                     if arr_id in blocks:
                         res = front_doa if arr_id == "left" and front_doa is not None else doa.estimate(
-                            blocks[arr_id],
+                            blocks[arr_id].samples,
                             target_freq=det_res.peak_freq,
                             band=(args.low, args.high),
                         )
@@ -693,6 +736,8 @@ def cmd_cli(args):
                     array_mode=array_mode,
                     suppressed=suppressed,
                     stream_video=stream_video,
+                    guidance_audio_block=blocks.get("left"),
+                    mount_calibration_id=geo.cfg.get("guidance", {}).get("mount_calibration_id"),
                 )
                 print("@JSON:" + json.dumps(payload, separators=(",", ":")), flush=True)
             else:
@@ -756,14 +801,14 @@ def cmd_simulate(args):
 
     for step in range(15):
         blocks = audio_mgr.get_latest_blocks()
-        det_res = detector.process(blocks["front"][:, 0], args.freq - 100, args.freq + 100)
+        det_res = detector.process(blocks["front"].samples[:, 0], args.freq - 100, args.freq + 100)
         if classifier is not None:
-            classification = classifier.classify(blocks["front"][:, 0])
+            classification = classifier.classify(blocks["front"].samples[:, 0])
         bearings = {}
         proms = {}
         stable = {}
         for arr_id, doa in doa_engines.items():
-            res = doa.estimate(blocks[arr_id], target_freq=det_res.peak_freq, band=(args.freq - 100, args.freq + 100))
+            res = doa.estimate(blocks[arr_id].samples, target_freq=det_res.peak_freq, band=(args.freq - 100, args.freq + 100))
             bearings[arr_id] = res.global_angle_deg
             proms[arr_id] = res.prominence
             stable[arr_id] = res.stable

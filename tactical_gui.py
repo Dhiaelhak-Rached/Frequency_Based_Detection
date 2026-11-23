@@ -10,9 +10,13 @@ import base64
 import io
 import json
 import os
+from pathlib import Path
 import queue
 import re
 import shlex
+import signal
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -32,6 +36,8 @@ from doa_engine import ArrayDOA
 from triangulation import TriangulationResult, Triangulator
 from audio_manager import MultiDeviceAudioManager
 from target_state_machine import StateMachineConfig, TargetStateMachine, TrackingMode
+from sim.real_uma16 import RealUMA16Source
+from sim.sitl_harness import PX4SitlProcess
 
 # Color Palette
 BG = "#161b22"
@@ -49,6 +55,23 @@ RAY_LEFT = "#58a6ff"   # Blue
 RAY_RIGHT = "#d29922"  # Orange
 SUPPRESSION_MAGENTA = "#ff66c4"
 GRID_COLOR = "#212b36"
+
+
+def build_simulation_command():
+    return [
+        sys.executable,
+        "-m",
+        "sim.run_single_drone_mic",
+        "--low",
+        "2900",
+        "--high",
+        "3000",
+        "--threshold",
+        "-55",
+        "--no-classifier",
+        "--duration",
+        "1200",
+    ]
 
 
 class TacticalGUI:
@@ -121,6 +144,9 @@ class TacticalGUI:
         self.is_active = False
         self.map_scale = 90.0  # pixels per meter
         self.map_center_offset_y = 220  # offset origin downwards on canvas
+        self.sim_process = None
+        self._sim_paused_vision = False
+        self._sim_paused_audio = False
 
         self._build_ui()
         if self.vision is not None and self.var_vision_enabled.get():
@@ -243,6 +269,41 @@ class TacticalGUI:
             fg=OK if self.classifier is not None else MUTED,
         )
         self.classifier_status_lbl.pack(side="left", padx=4)
+        self.sim_button = tk.Button(
+            action_row,
+            text="RUN SIMULATION",
+            font=("Helvetica", 10, "bold"),
+            bg="#1f6feb",
+            fg="#ffffff",
+            activebackground="#388bfd",
+            padx=12,
+            pady=4,
+            command=self.on_run_simulation,
+            relief="flat",
+        )
+        self.sim_button.pack(side="left", padx=(14, 4))
+        self.sim_stop_button = tk.Button(
+            action_row,
+            text="STOP SIM",
+            font=("Helvetica", 10, "bold"),
+            bg=WARN,
+            fg="#ffffff",
+            activebackground="#da3633",
+            padx=10,
+            pady=4,
+            command=self.on_stop_simulation,
+            relief="flat",
+            state="disabled",
+        )
+        self.sim_stop_button.pack(side="left", padx=(0, 6))
+        self.sim_status_lbl = tk.Label(
+            action_row,
+            text="SIM READY",
+            font=("Helvetica", 9, "bold"),
+            bg=PANEL,
+            fg=MUTED,
+        )
+        self.sim_status_lbl.pack(side="left", padx=4)
         tk.Label(action_row, text="Map Zoom:", bg=PANEL, fg=FG).pack(side="right", padx=(4, 2))
         self.slider_zoom = tk.Scale(
             action_row, from_=30, to=200, orient="horizontal", showvalue=True, bg=PANEL,
@@ -802,13 +863,13 @@ class TacticalGUI:
 
         # 1. Frequency Detection (on front array ch0 or first available block)
         det_block = blocks.get("front", next(iter(blocks.values())))
-        det_ch = det_block[:, 0]
+        det_ch = det_block.samples[:, 0]
         det_res = self.detector.process(det_ch, low, high)
         front_doa = None
         if self.var_uma16_front_only.get():
             selection = select_front_only_target(
                 det_res,
-                blocks["left"],
+                blocks["left"].samples,
                 self.doa_engines["left"],
                 (low, high),
                 self._current_suppression(),
@@ -839,7 +900,7 @@ class TacticalGUI:
                 doa_eng = self.doa_engines[arr_id]
                 target_f = det_res.peak_freq if det_res.detected else None
                 res = front_doa if arr_id == "left" and front_doa is not None else doa_eng.estimate(
-                    blocks[arr_id],
+                    blocks[arr_id].samples,
                     target_freq=target_f,
                     band=(low, high),
                 )
@@ -1141,7 +1202,121 @@ class TacticalGUI:
             camera_elevation=cam_el,
         )
 
+    def _release_devices_for_simulation(self):
+        vision = getattr(self, "vision", None)
+        if vision is not None and getattr(vision, "is_running", False):
+            vision.stop()
+            self.vision_result = None
+            self._sim_paused_vision = True
+        else:
+            self._sim_paused_vision = False
+
+        if getattr(self, "is_active", False) and getattr(self, "audio_mgr", None) is not None:
+            self.on_toggle_listening()
+            self._sim_paused_audio = True
+        else:
+            self._sim_paused_audio = False
+
+    def _restore_devices_after_simulation(self):
+        if getattr(self, "_sim_paused_vision", False):
+            self._sim_paused_vision = False
+            vision = getattr(self, "vision", None)
+            var_vision = getattr(self, "var_vision_enabled", None)
+            if vision is not None and (var_vision is None or var_vision.get()):
+                vision.start()
+
+        if getattr(self, "_sim_paused_audio", False):
+            self._sim_paused_audio = False
+            if not getattr(self, "is_active", False) and getattr(self, "audio_mgr", None) is not None:
+                self.on_toggle_listening()
+
+    def on_run_simulation(self):
+        if self.sim_process is not None:
+            return
+        if hasattr(self, "var_low"):
+            self.save_config()
+        self._release_devices_for_simulation()
+        RealUMA16Source.kill_stale()
+        project_dir = Path(__file__).resolve().parent
+        reports_dir = project_dir / "sim" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(reports_dir / "gui_simulation.log", "w") as log_file:
+                self.sim_process = subprocess.Popen(
+                    build_simulation_command(),
+                    cwd=project_dir,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+        except OSError as exc:
+            self.sim_process = None
+            self._restore_devices_after_simulation()
+            self.sim_status_lbl.configure(text="SIM START FAILED", fg=WARN)
+            print(f"[ERROR] Could not start simulation: {exc}")
+            return
+        self.sim_button.configure(state="disabled", text="SIM RUNNING")
+        stop_btn = getattr(self, "sim_stop_button", None)
+        if stop_btn is not None:
+            stop_btn.configure(state="normal")
+        self.sim_status_lbl.configure(text=f"SIM PID {self.sim_process.pid}", fg=ACCENT)
+        self.root.after(250, self._poll_simulation)
+
+    def on_stop_simulation(self):
+        self._stop_simulation(restore_devices=True)
+        self.sim_button.configure(state="normal", text="RUN SIMULATION")
+        stop_btn = getattr(self, "sim_stop_button", None)
+        if stop_btn is not None:
+            stop_btn.configure(state="disabled")
+        self.sim_status_lbl.configure(text="SIM STOPPED", fg=MUTED)
+
+    def _poll_simulation(self):
+        process = self.sim_process
+        if process is None:
+            return
+        return_code = process.poll()
+        if return_code is None:
+            self.root.after(500, self._poll_simulation)
+            return
+        self.sim_process = None
+        RealUMA16Source.kill_stale()
+        stop_btn = getattr(self, "sim_stop_button", None)
+        if stop_btn is not None:
+            stop_btn.configure(state="disabled")
+        self._restore_devices_after_simulation()
+        self.sim_button.configure(state="normal", text="RUN SIMULATION")
+        if return_code == 0:
+            self.sim_status_lbl.configure(text="SIM PASSED", fg=OK)
+        else:
+            self.sim_status_lbl.configure(text=f"SIM FAILED ({return_code})", fg=WARN)
+
+    def _stop_simulation(self, restore_devices: bool = True):
+        process = self.sim_process
+        self.sim_process = None
+        if process is None or process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGINT)
+            process.wait(timeout=8.0)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+        PX4SitlProcess.kill_stale()
+        RealUMA16Source.kill_stale()
+        stop_btn = getattr(self, "sim_stop_button", None)
+        if stop_btn is not None:
+            stop_btn.configure(state="disabled")
+        if restore_devices:
+            self._restore_devices_after_simulation()
+
     def on_close(self):
+        self._stop_simulation(restore_devices=False)
         self.jetson_remote.stop_if_running()
         self.audio_mgr.stop()
         if self.vision is not None:

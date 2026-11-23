@@ -494,9 +494,7 @@ def cmd_stop(target: JetsonTarget, args: argparse.Namespace) -> int:
 def cmd_test(target: JetsonTarget, args: argparse.Namespace) -> int:
     remote_cmd = (
         f"cd {shlex.quote(target.remote_dir)} && "
-        ".venv/bin/python -m unittest "
-        "test_state_machine test_classifier test_vertical_uma16 "
-        "test_vision test_direction_suppression test_vision_tracking"
+        ".venv/bin/python -m pytest -q"
     )
     return _run_cmd(build_ssh_command(target, remote_cmd), dry_run=args.dry_run)
 

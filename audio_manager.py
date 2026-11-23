@@ -6,16 +6,24 @@ UMA-16 / MCHStreamer arrays) and includes a high-fidelity synthetic wavefield si
 testing and verification without physical hardware.
 """
 
+from dataclasses import dataclass
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
 
 from geometry import RigGeometry, SOUND_SPEED
+
+
+@dataclass(frozen=True)
+class AudioBlock:
+    samples: np.ndarray
+    captured_at: float
+    sequence: int
 
 
 def resolve_audio_device(spec: Optional[Union[int, str]], min_channels: int = 1) -> Optional[int]:
@@ -59,11 +67,12 @@ class MultiDeviceAudioManager:
         self.simulate = simulate
 
         self.streams: Dict[str, sd.InputStream] = {}
-        self.buffers: Dict[str, np.ndarray] = {}
+        self.buffers: Dict[str, AudioBlock] = {}
         self.active_devices: Dict[str, Tuple[int, str]] = {}
         self.enabled_arrays = set(self.geo.arrays)
         self.lock = threading.Lock()
         self.is_running = False
+        self._sequences = {arr_id: 0 for arr_id in self.geo.arrays}
 
         # Simulation state
         self.sim_target_pos = np.array([-1.0, 2.5], dtype=float)  # Shared forward/left field of view
@@ -131,6 +140,8 @@ class MultiDeviceAudioManager:
         if self.is_running:
             return
         self.enabled_arrays = set(array_ids) if array_ids is not None else set(self.geo.arrays)
+        with self.lock:
+            self.buffers.clear()
         self.is_running = True
 
         if self.simulate:
@@ -147,21 +158,35 @@ class MultiDeviceAudioManager:
             if device_map and arr_id in device_map:
                 dev_idx = resolve_audio_device(device_map[arr_id], min_channels=req_channels)
 
-            # 2. Check rig_config.json
+            # 2. Check rig_config.json (prefer hardware name match if config index points to generic pulse/default)
+            hints = ["micarray", "uma8", "uma-8"] if arr.array_type == "uma8" else ["mchstreamer", "uma16", "uma-16"]
             if dev_idx is None:
                 cfg_idx = self.geo.cfg.get("arrays", {}).get(arr_id, {}).get("device_index")
                 if cfg_idx is not None:
-                    dev_idx = resolve_audio_device(cfg_idx, min_channels=req_channels)
+                    candidate = resolve_audio_device(cfg_idx, min_channels=req_channels)
+                    if candidate is not None:
+                        cand_name = str(sd.query_devices(candidate).get("name", "")).strip().lower()
+                        if cand_name in ("default", "pulse"):
+                            for h in hints:
+                                hw_idx = resolve_audio_device(h, min_channels=req_channels)
+                                if hw_idx is not None:
+                                    candidate = hw_idx
+                                    break
+                        dev_idx = candidate
 
             # 3. Automatic name discovery (MCHStreamer / UMA16 / micArray)
             if dev_idx is None:
-                hints = ["micarray", "uma8", "uma-8"] if arr.array_type == "uma8" else ["mchstreamer", "uma16", "uma-16"]
                 for h in hints:
                     dev_idx = resolve_audio_device(h, min_channels=req_channels)
                     if dev_idx is not None:
                         break
 
-            # 4. Fallback to default system input if specific device isn't matched
+            # 4. Fallback to multichannel default/pulse input before generic system default
+            if dev_idx is None:
+                for fallback_name in ("default", "pulse"):
+                    dev_idx = resolve_audio_device(fallback_name, min_channels=req_channels)
+                    if dev_idx is not None:
+                        break
             if dev_idx is None:
                 default_dev = sd.default.device[0]
                 dev_idx = default_dev if default_dev is not None and default_dev >= 0 else 0
@@ -169,13 +194,24 @@ class MultiDeviceAudioManager:
             info = sd.query_devices(dev_idx)
             n_ch = min(info["max_input_channels"], 16 if arr.array_type == "uma16" else 8)
             dev_name = info["name"]
+            if n_ch < req_channels:
+                print(
+                    f"[WARNING] Array '{arr.name}' requires {req_channels} channels "
+                    f"but device [{dev_idx}] {dev_name!r} only has {n_ch}. Check USB connection for UMA-16."
+                )
             self.active_devices[arr_id] = (dev_idx, dev_name)
             print(f"[AUDIO] Array '{arr.name}' bound to device [{dev_idx}] {dev_name!r} ({n_ch} channels @ {self.sample_rate} Hz)")
 
             def make_callback(side_id):
                 def callback(indata, frames, time_info, status):
+                    captured_at = time.monotonic()
                     with self.lock:
-                        self.buffers[side_id] = indata.copy()
+                        self._sequences[side_id] += 1
+                        self.buffers[side_id] = AudioBlock(
+                            samples=indata.copy(),
+                            captured_at=captured_at,
+                            sequence=self._sequences[side_id],
+                        )
                 return callback
 
             try:
@@ -203,21 +239,26 @@ class MultiDeviceAudioManager:
         self.streams.clear()
         self.active_devices.clear()
 
-    def get_latest_blocks(self) -> Dict[str, np.ndarray]:
-        """Fetch the latest audio blocks from the selected arrays."""
+    def get_latest_blocks(self) -> Dict[str, AudioBlock]:
+        """Fetch copies of the latest timestamped audio blocks."""
         if self.simulate:
             return self._generate_simulated_blocks()
 
         with self.lock:
-            out = {}
-            for arr_id in self.enabled_arrays:
-                if arr_id in self.buffers:
-                    out[arr_id] = self.buffers[arr_id].copy()
-            return out
+            return {
+                arr_id: AudioBlock(
+                    samples=self.buffers[arr_id].samples.copy(),
+                    captured_at=self.buffers[arr_id].captured_at,
+                    sequence=self.buffers[arr_id].sequence,
+                )
+                for arr_id in self.enabled_arrays
+                if arr_id in self.buffers
+            }
 
-    def _generate_simulated_blocks(self) -> Dict[str, np.ndarray]:
+    def _generate_simulated_blocks(self) -> Dict[str, AudioBlock]:
         """Synthesize wave propagation from the virtual target to all active microphones."""
         now = time.time()
+        captured_at = time.monotonic()
         elapsed = now - self.sim_t0
 
         # Optional slow orbit to simulate moving drone
@@ -268,6 +309,13 @@ class MultiDeviceAudioManager:
                 noise = np.random.normal(0, noise_amp, self.blocksize)
                 block[:, ch] = sig + noise
 
-            out[arr_id] = block
+            with self.lock:
+                self._sequences[arr_id] += 1
+                sequence = self._sequences[arr_id]
+            out[arr_id] = AudioBlock(
+                samples=block,
+                captured_at=captured_at,
+                sequence=sequence,
+            )
 
         return out

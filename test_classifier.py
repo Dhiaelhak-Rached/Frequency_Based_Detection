@@ -109,7 +109,7 @@ class ClassifierTest(unittest.TestCase):
         for step in range(8):
             audio_mgr.sim_t0 = time.time() - step * audio_mgr.block_duration
             blocks = audio_mgr.get_latest_blocks()
-            mono = blocks["front"][:, 0]
+            mono = blocks["front"].samples[:, 0]
             classification = classifier.classify(mono)
             detection = detector.process(mono, 900.0, 1100.0)
             bearings = {}
@@ -117,7 +117,7 @@ class ClassifierTest(unittest.TestCase):
             stable = {}
             for arr_id, doa in doa_engines.items():
                 result = doa.estimate(
-                    blocks[arr_id],
+                    blocks[arr_id].samples,
                     target_freq=detection.peak_freq,
                     band=(900.0, 1100.0),
                 )

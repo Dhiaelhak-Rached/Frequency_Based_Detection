@@ -86,6 +86,8 @@ model/metadata.json
 model/reference_outputs.npz
 classifier.py
 tracked_camera.py
+guidance.py
+px4_controller.py
 visual_tracking/core.py
 visual_tracking/logic.py
 visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar
@@ -149,7 +151,7 @@ sha256sum visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar
 Compare the audio hashes with `model/metadata.json`. The DyHiT checkpoint SHA-256 must be `8bd307baf7ecd10b930a9d2a7288bb74f87c03dc6dd984356f7be9a458b27f61`. Then run the headless checks:
 
 ```bash
-python -m unittest test_classifier test_vertical_uma16 test_vision test_direction_suppression test_vision_tracking
+python -m pytest -q
 python -m pytest visual_tracking/upstream_tests -q
 python -c "from visual_tracking.core import load_tracker; tracker, _ = load_tracker('visual_tracking/tracker_lib', 'dyhit'); print(tracker.device)"
 python main.py test-geometry
@@ -159,7 +161,7 @@ python main.py list-cameras
 
 Expected results:
 
-- All 44 project tests and 14 upstream tracker-core tests pass.
+- All project tests and 14 upstream tracker-core tests pass.
 - The real DyHiT checkpoint loads and reports the expected CUDA device.
 - ONNX maximum probability error is below `0.001`.
 - Geometry reports 23 active microphones and 36.5 cm board separation.

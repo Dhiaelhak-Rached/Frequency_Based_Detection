@@ -22,10 +22,37 @@
   "uma16_front_only": {
     "direction_suppression": {
       "enabled": true,
-      "bearing_deg": 60.0,
+      "bearing_deg": 89.0,
       "tolerance_deg": 10.0,
       "max_peak_candidates": 4
     }
+  },
+  "guidance": {
+    "enabled": false,
+    "mount_calibration_id": "uma16-front-body-v1",
+    "control_rate_hz": 20.0,
+    "observation_timeout_s": 0.6,
+    "required_stable_samples": 5,
+    "filter_alpha": 0.35,
+    "min_elevation_prominence": 0.45,
+    "yaw_deadband_deg": 5.0,
+    "yaw_exit_deg": 8.0,
+    "elevation_deadband_deg": 4.0,
+    "elevation_exit_deg": 7.0,
+    "yaw_rate_gain": 0.8,
+    "max_yaw_rate_deg_s": 20.0,
+    "vertical_speed_gain": 0.02,
+    "max_vertical_speed_m_s": 0.3,
+    "max_forward_speed_m_s": 0.5,
+    "max_vertical_accel_m_s2": 0.4,
+    "max_horizontal_accel_m_s2": 0.5,
+    "min_altitude_m": 2.0,
+    "max_altitude_m": 20.0,
+    "max_vertical_travel_m": 3.0,
+    "max_follow_distance_m": 15.0,
+    "max_follow_duration_s": 45.0,
+    "geofence_radius_m": 25.0,
+    "min_battery_percent": 30.0
   },
   "classifier": {
     "enabled": true,
@@ -41,10 +68,11 @@
   "vision": {
     "enabled": true,
     "model_path": "model/Yolo/best.pt",
-    "camera": "/dev/video0",
-    "horizontal_fov_deg": 75.0,
+    "camera": "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0",
+    "horizontal_fov_deg": 100.0,
     "camera_fovs": {
-      "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0
+      "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0,
+      "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0": 100.0
     },
     "orientation_deg": 0.0,
     "confidence": 0.5,
@@ -126,8 +154,8 @@
         14,
         15
       ],
-      "device_index": 12,
-      "device_hint": "5- MCHStreamer",
+      "device_index": 9,
+      "device_hint": "UMA16v2",
       "cable": "black USB"
     }
   }

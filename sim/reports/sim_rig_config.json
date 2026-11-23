@@ -1,0 +1,161 @@
+{
+  "name": "Dual-Array Acoustic Rig",
+  "sound_speed": 343.0,
+  "sample_rate": 44100,
+  "physical_measurements": {
+    "reference": "XMOS board to XMOS board",
+    "apex_to_left_m": 0.365,
+    "uma16_grid": [
+      4,
+      4
+    ],
+    "uma16_width_m": 0.126,
+    "uma16_length_m": 0.126
+  },
+  "default_detection": {
+    "target_low_hz": 200.0,
+    "target_high_hz": 5000.0,
+    "threshold_dbfs": -80.0,
+    "block_duration": 0.2,
+    "average_blocks": 4
+  },
+  "uma16_front_only": {
+    "direction_suppression": {
+      "enabled": true,
+      "bearing_deg": 89.0,
+      "tolerance_deg": 10.0,
+      "max_peak_candidates": 4
+    }
+  },
+  "guidance": {
+    "enabled": true,
+    "mount_calibration_id": "uma16-front-body-v1",
+    "control_rate_hz": 20.0,
+    "observation_timeout_s": 0.6,
+    "required_stable_samples": 5,
+    "filter_alpha": 0.35,
+    "min_elevation_prominence": 0.45,
+    "yaw_deadband_deg": 5.0,
+    "yaw_exit_deg": 8.0,
+    "elevation_deadband_deg": 4.0,
+    "elevation_exit_deg": 7.0,
+    "yaw_rate_gain": 0.8,
+    "max_yaw_rate_deg_s": 20.0,
+    "vertical_speed_gain": 0.02,
+    "max_vertical_speed_m_s": 0.3,
+    "max_forward_speed_m_s": 0.5,
+    "max_vertical_accel_m_s2": 0.4,
+    "max_horizontal_accel_m_s2": 0.5,
+    "min_altitude_m": 2.0,
+    "max_altitude_m": 20.0,
+    "max_vertical_travel_m": 3.0,
+    "max_follow_distance_m": 15.0,
+    "max_follow_duration_s": 45.0,
+    "geofence_radius_m": 25.0,
+    "min_battery_percent": 30.0
+  },
+  "classifier": {
+    "enabled": true,
+    "model_path": "model/mobilenetv2_drone.onnx",
+    "metadata_path": "model/metadata.json",
+    "reference_path": "model/reference_outputs.npz",
+    "threshold": 0.75,
+    "votes_required": 3,
+    "vote_window": 5,
+    "window_seconds": 1.0,
+    "hop_seconds": 0.2
+  },
+  "vision": {
+    "enabled": true,
+    "model_path": "model/Yolo/best.pt",
+    "camera": "/dev/video0",
+    "horizontal_fov_deg": 75.0,
+    "camera_fovs": {
+      "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0
+    },
+    "orientation_deg": 0.0,
+    "confidence": 0.5,
+    "inference_hz": 10.0,
+    "max_target_step_px": 120.0,
+    "confirmation_frames": 3,
+    "lost_timeout_s": 0.75,
+    "tracker": {
+      "enabled": true,
+      "name": "dyhit",
+      "library_path": "visual_tracking/tracker_lib",
+      "checkpoint_path": "visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar",
+      "device": "auto",
+      "detector_every": 5,
+      "verify_iou": 0.3,
+      "reacquire_gate": 1.5,
+      "lost_after_s": 0.5,
+      "trust_tracker_s": 2.0,
+      "search_growth": 200.0,
+      "stamp_tolerance": 0.02,
+      "max_catch_up": 3,
+      "buffer_size": 60
+    }
+  },
+  "arrays": {
+    "front": {
+      "name": "UMA-8 Apex",
+      "type": "uma8",
+      "center": [
+        0.0,
+        0.0
+      ],
+      "orientation_deg": 0.0,
+      "mount": "vertical",
+      "radius_m": 0.04275,
+      "channels": 8,
+      "active_channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "device_index": 4,
+      "device_hint": "miniDSP micArray"
+    },
+    "left": {
+      "name": "UMA-16 Left",
+      "type": "uma16",
+      "xmos_center": [
+        -0.295598291,
+        -0.21411831
+      ],
+      "mic_center_offset_local_m": [
+        0.0,
+        0.0
+      ],
+      "orientation_deg": 270.0,
+      "mount": "vertical",
+      "grid_m": 0.042,
+      "channels": 16,
+      "active_channels": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15
+      ],
+      "device_index": 12,
+      "device_hint": "5- MCHStreamer",
+      "cable": "black USB"
+    }
+  }
+}

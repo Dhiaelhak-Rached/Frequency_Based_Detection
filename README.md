@@ -191,7 +191,7 @@ The interface is organized into four working areas:
   elevation, range, and coordinates where available.
 - **Visual analysis:** target-band spectrum, tactical map, annotated camera image,
   and a high-contrast 3D sound-direction view.
-- **Actions:** Start Listening, classifier state, and map zoom.
+- **Actions:** Start Listening, classifier state, map zoom, and **Run Simulation** for the full local PX4/Gazebo validation. Simulation output is logged to `sim/reports/gui_simulation.log`; closing the GUI stops its simulation processes.
 - **Settings:** dedicated Audio & Detection, Camera, and Modes & Lock panels.
 
 ### Audio & Detection
@@ -316,11 +316,58 @@ python3 main.py cli --simulate --require-drone --low 900 --high 1100
 - Acoustic 3D vectors are unit directions, not positions.
 - Dual-array coordinates and range are expressed in meters.
 
+## PX4 Angle Guidance (Experimental)
+
+The optional PX4 controller converts **fresh UMA-16 front-only angles** into bounded body-frame
+velocity and yaw-rate setpoints. It does not estimate target distance, target altitude, obstacles,
+or a safe stopping point. Elevation controls only the direction of bounded vertical motion; PX4's
+own altitude telemetry enforces the altitude envelope.
+
+The guidance sequence is:
+
+1. **HOVER_SEARCH:** wait for distinct, fresh, temporally stable acoustic blocks.
+2. **ALIGN_YAW:** rotate toward the azimuth while holding position.
+3. **ALIGN_VERTICAL:** after yaw alignment, climb or descend toward a zero elevation angle, subject
+   to vertical-speed, acceleration, absolute-altitude, and cumulative-travel limits.
+4. **FOLLOW:** only after both angles remain inside their deadbands, apply bounded forward speed.
+   Any lost alignment stops forward motion and returns to alignment.
+5. **TARGET_LOST_HOLD:** stale, repeated-only, uncertain, suppressed, or invalid acoustic input
+   produces zero motion commands; old directions are not reused.
+
+The pure decision logic is in `guidance.py`. `px4_controller.py` is a separate MAVSDK-Python
+process that monitors PX4 flight mode, position, local displacement, battery, and telemetry
+freshness. It never arms or takes off. The operator must provide an already hovering PX4 aircraft,
+an independent RC/manual override, and configured PX4 Offboard/RC/battery failsafes.
+
+### SITL and hover-only check
+
+Start PX4 SITL separately and confirm its MAVSDK endpoint, normally `udp://:14540`. With the
+aircraft already hovering and guidance disabled in `rig_config.json`, this pipeline authorizes
+Offboard hover only:
+
+```bash
+python3 main.py cli --uma16-front-only --no-vision --stream-json | \
+  python3 px4_controller.py --authorize-offboard
+```
+
+Motion additionally requires `guidance.enabled: true`, a verified `mount_calibration_id`, and the
+explicit `--enable-motion` flag. The configured mounting identity must match the incoming acoustic
+observation. Review all speed, altitude, vertical-travel, geofence, distance, duration, and battery
+limits before enabling motion.
+
+The UMA-16 face must be aligned with aircraft forward and its row-up direction with aircraft up.
+Positive elevation commands upward motion and negative elevation commands downward motion. No
+compass-based rotation is needed because commands are sent in the body frame.
+
+Validate the complete sequence and every failure case in SITL first. Propeller noise can invalidate
+acoustic elevation; do not enable motion unless measurements remain stable at operating throttle.
+Slow speed alone is not a collision-avoidance mechanism.
+
 ## Verification
 
 ```bash
 # Complete automated suite: audio, geometry, elevation, vision, and tracking
-python3 -m unittest test_classifier test_vertical_uma16 test_vision test_direction_suppression test_vision_tracking
+python3 -m pytest -q
 python3 -m pytest visual_tracking/upstream_tests -q
 
 # Physical rig geometry checks
@@ -353,7 +400,9 @@ and room reflections; synthetic validation does not replace this hardware check.
 | File | Responsibility |
 |---|---|
 | [`main.py`](main.py) | CLI/GUI launcher, arguments, model setup, and device listing |
-| [`audio_manager.py`](audio_manager.py) | Multi-device capture and synthetic wavefield simulation |
+| [`guidance.py`](guidance.py) | Fail-closed acoustic angle-guidance state machine and motion limits |
+| [`px4_controller.py`](px4_controller.py) | Supervised MAVSDK/PX4 Offboard adapter and flight telemetry checks |
+| [`audio_manager.py`](audio_manager.py) | Timestamped multi-device capture and synthetic wavefield simulation |
 | [`detector.py`](detector.py) | Target-band FFT detection and ranked spectral peaks |
 | [`direction_suppression.py`](direction_suppression.py) | Front-only exclusion zones and alternate-target selection |
 | [`doa_engine.py`](doa_engine.py) | Azimuth, UMA-16 elevation, confidence tracking, and 3D vectors |
