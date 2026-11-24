@@ -292,7 +292,7 @@ def parse_args():
 
 
 def cmd_gui(args):
-    from tactical_gui import TacticalGUI
+    from frequency_id.gui import TacticalGUI
     geo = RigGeometry()
     if args.uma16_front_only:
         geo.set_uma16_front_only(True)

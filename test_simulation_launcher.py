@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import tactical_gui
+from frequency_id.gui import TacticalGUI, build_simulation_command, sim_launcher
 
 
 class Widget:
@@ -37,7 +37,7 @@ class Root:
 
 class SimulationLauncherTest(unittest.TestCase):
     def make_gui(self, process):
-        gui = object.__new__(tactical_gui.TacticalGUI)
+        gui = object.__new__(TacticalGUI)
         gui.sim_process = process
         gui.sim_button = Widget()
         gui.sim_status_lbl = Widget()
@@ -45,7 +45,7 @@ class SimulationLauncherTest(unittest.TestCase):
         return gui
 
     def test_command_runs_full_gazebo_simulation_without_shell(self):
-        command = tactical_gui.build_simulation_command()
+        command = build_simulation_command()
         self.assertEqual(
             command,
             [
@@ -69,19 +69,18 @@ class SimulationLauncherTest(unittest.TestCase):
         gui = self.make_gui(None)
         gui.sim_stop_button = Widget()
         with tempfile.TemporaryDirectory() as directory, patch(
-            "tactical_gui.Path"
-        ) as path_class, patch(
-            "tactical_gui.subprocess.Popen", return_value=process
+            "frequency_id.gui.sim_launcher.get_project_root", return_value=Path(directory)
+        ), patch(
+            "frequency_id.gui.sim_launcher.subprocess.Popen", return_value=process
         ) as popen, patch.object(
-            tactical_gui.RealUMA16Source, "kill_stale"
+            sim_launcher.RealUMA16Source, "kill_stale"
         ) as uma_kill_stale:
-            path_class.return_value.resolve.return_value.parent = Path(directory)
             gui.on_run_simulation()
             gui.on_run_simulation()
         popen.assert_called_once()
         uma_kill_stale.assert_called_once_with()
         args, kwargs = popen.call_args
-        self.assertEqual(args[0], tactical_gui.build_simulation_command())
+        self.assertEqual(args[0], build_simulation_command())
         self.assertEqual(kwargs["cwd"], Path(directory))
         self.assertTrue(kwargs["start_new_session"])
         self.assertEqual(gui.sim_process, process)
@@ -97,7 +96,7 @@ class SimulationLauncherTest(unittest.TestCase):
         self.assertEqual(gui.root.scheduled, [(500, gui._poll_simulation)])
 
         process.return_code = 0
-        with patch.object(tactical_gui.RealUMA16Source, "kill_stale") as uma_kill_stale:
+        with patch.object(sim_launcher.RealUMA16Source, "kill_stale") as uma_kill_stale:
             gui._poll_simulation()
         uma_kill_stale.assert_called_once_with()
         self.assertIsNone(gui.sim_process)
@@ -109,13 +108,13 @@ class SimulationLauncherTest(unittest.TestCase):
         process = Process()
         gui = self.make_gui(process)
         gui.sim_stop_button = Widget()
-        with patch("tactical_gui.os.killpg") as killpg, patch.object(
-            tactical_gui.PX4SitlProcess, "kill_stale"
+        with patch("frequency_id.gui.sim_launcher.os.killpg") as killpg, patch.object(
+            sim_launcher.PX4SitlProcess, "kill_stale"
         ) as kill_stale, patch.object(
-            tactical_gui.RealUMA16Source, "kill_stale"
+            sim_launcher.RealUMA16Source, "kill_stale"
         ) as uma_kill_stale:
             gui._stop_simulation()
-        killpg.assert_called_once_with(process.pid, tactical_gui.signal.SIGINT)
+        killpg.assert_called_once_with(process.pid, sim_launcher.signal.SIGINT)
         kill_stale.assert_called_once_with()
         uma_kill_stale.assert_called_once_with()
         self.assertEqual(gui.sim_stop_button.options["state"], "disabled")
@@ -151,20 +150,19 @@ class SimulationLauncherTest(unittest.TestCase):
         gui.audio_mgr = None
 
         with tempfile.TemporaryDirectory() as directory, patch(
-            "tactical_gui.Path"
-        ) as path_class, patch(
-            "tactical_gui.subprocess.Popen", return_value=process
+            "frequency_id.gui.sim_launcher.get_project_root", return_value=Path(directory)
+        ), patch(
+            "frequency_id.gui.sim_launcher.subprocess.Popen", return_value=process
         ), patch.object(
-            tactical_gui.RealUMA16Source, "kill_stale"
+            sim_launcher.RealUMA16Source, "kill_stale"
         ):
-            path_class.return_value.resolve.return_value.parent = Path(directory)
             gui.on_run_simulation()
 
         self.assertEqual(gui.vision.stops, 1)
         self.assertFalse(gui.vision.is_running)
 
         process.return_code = 0
-        with patch.object(tactical_gui.RealUMA16Source, "kill_stale"):
+        with patch.object(sim_launcher.RealUMA16Source, "kill_stale"):
             gui._poll_simulation()
         self.assertEqual(gui.vision.starts, 1)
         self.assertTrue(gui.vision.is_running)

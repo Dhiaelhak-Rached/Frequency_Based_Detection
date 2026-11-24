@@ -96,7 +96,7 @@ class TestJetsonCtl(unittest.TestCase):
             self.assertIn("--uma16-front-only --low 900 --high 1100", called_cmd[-1])
 
     def test_parse_cli_block_and_gui_import(self):
-        import tactical_gui
+        from frequency_id import gui as tactical_gui
 
         self.assertTrue(hasattr(tactical_gui, "TacticalGUI"))
         self.assertTrue(hasattr(tactical_gui, "JetsonRemoteTab"))
@@ -116,7 +116,7 @@ class TestJetsonCtl(unittest.TestCase):
     def test_jetson_remote_tab_handles_json_and_disconnect(self):
         import tkinter as tk
         from frequency_id.acoustics.geometry import RigGeometry
-        import tactical_gui
+        from frequency_id import gui as tactical_gui
 
         try:
             root = tk.Tk()
