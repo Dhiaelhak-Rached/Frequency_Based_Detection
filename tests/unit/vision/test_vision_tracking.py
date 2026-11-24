@@ -6,7 +6,7 @@ import numpy as np
 
 from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.cli import create_vision
-from test_vision import FakeModel, FakePrediction
+from tests.helpers import FakeModel, FakePrediction
 from frequency_id.vision.tracked_camera import LatestRequestQueue, TrackedDroneCamera, TrackingSettings
 from frequency_id.vision.detector import DroneCamera
 from frequency_id.vision.core import TrackerCore

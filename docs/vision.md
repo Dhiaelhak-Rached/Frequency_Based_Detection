@@ -61,12 +61,12 @@ sequenceDiagram
 ## 2. Step-by-Step Pipeline Breakdown
 
 ### Step 1: Video Capture & Ingestion
-- **Files**: `vision_detector.py` and `tracked_camera.py`
+- **Files**: `src/frequency_id/vision/detector.py` and `src/frequency_id/vision/tracked_camera.py`
 - Accepts standard V4L2 device indices (`0`, `1`), stable udev paths (`/dev/v4l/by-id/...`), or network RTSP streams (`rtsp://...`).
 - When a new frame arrives via `cv2.VideoCapture.read()`, the tracker thread stamps it with a high-resolution monotonic timestamp `stamp = time.monotonic()`.
 
 ### Step 2: Verification Gating & Non-Blocking Request Queue
-- **Files**: `visual_tracking/core.py` and `tracked_camera.py`
+- **Files**: `src/frequency_id/vision/core.py` and `src/frequency_id/vision/tracked_camera.py`
 - Before the tracker processes the image, `TrackerCore.pre_image(stamp)` decides if YOLO needs to inspect this frame:
   - **In `SEARCH` mode**: Returns `True` on every frame (to detect and acquire a drone as quickly as possible).
   - **In `TRACK` mode**: Returns `True` every $N$-th frame (configured by `detector_every`, default: `5` frames).
@@ -74,14 +74,14 @@ sequenceDiagram
   - **Zero Backlog / No Latency Accumulation**: `LatestRequestQueue` has `maxsize=1`. If YOLO is still computing an earlier frame, the old unread request is immediately discarded in favor of the latest frame.
 
 ### Step 3: Fast Synchronous Visual Tracking (DyHiT)
-- **Files**: `tracked_camera.py` and `visual_tracking/core.py`
+- **Files**: `src/frequency_id/vision/tracked_camera.py` and `src/frequency_id/vision/core.py`
 - If the tracker is initialized and active (`self.ready == True`):
   - Calls `tracker.update(frame)` using the vendored **DyHiT transformer** model (`visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar`).
   - DyHiT predicts target bounding box `(x, y, w, h)` and a tracking confidence score in ~14–33 ms.
 - The frame, computed box, confidence score, and timestamp are saved in a 60-frame historical ring buffer `buf`.
 
 ### Step 4: Asynchronous YOLO11 Semantic Verification
-- **Files**: `tracked_camera.py` and `vision_detector.py`
+- **Files**: `src/frequency_id/vision/tracked_camera.py` and `src/frequency_id/vision/detector.py`
 - The background verifier thread consumes from `LatestRequestQueue`:
   1. Runs `YOLO.predict(frame, conf=0.5)` on its own CUDA stream (`torch.cuda.Stream()`), completely isolating YOLO execution from the DyHiT tracker.
   2. Filters detected class labels: only objects labeled `"drone"` are accepted; birds, cars, or background clutter are discarded.
@@ -112,7 +112,7 @@ stateDiagram-v2
 ```
 
 ### Step 5: Historical Time-Alignment & Decision State Machine
-- **File**: `visual_tracking/logic.py`
+- **File**: `src/frequency_id/vision/logic.py`
 - Because YOLO takes tens of milliseconds to run, its results arrive when the live camera feed has already advanced several frames.
 - **Historical Frame Matching**: `TrackerCore._find(stamp)` matches YOLO's timestamp to the exact historical frame stored in the 60-frame ring buffer. The YOLO bounding boxes are compared against what DyHiT saw on **that specific past frame**, not the current live frame.
 - The `TargetLogic` state machine computes the event:
@@ -128,13 +128,13 @@ stateDiagram-v2
 | **`lost`** | Target unverified for $\ge 0.5\text{ s}$ (`lost_after_s`). | Transitions state to `SEARCH`; clears target box and direction vectors. |
 
 ### Step 6: Bounded Tracker Catch-Up
-- **File**: `visual_tracking/core.py`
+- **File**: `src/frequency_id/vision/core.py`
 - If DyHiT was restarted or corrected on a historical frame, it is now slightly behind real time.
 - `TrackerCore` quickly iterates through the subsequent buffered frames (up to `max_catch_up = 3` frames) running `tracker.update(frame)` to catch up to the current frame.
 - If the lag exceeds 3 frames, catch-up is skipped and tracking resumes directly on the next incoming live frame, strictly bounding processing latency.
 
 ### Step 7: Pixel-to-Direction 3D Projection
-- **File**: `vision_detector.py`
+- **File**: `src/frequency_id/vision/detector.py`
 - Once the target box `(x1, y1, x2, y2)` is confirmed on the current frame, its optical center $(u, v)$ is calculated:
   $$u = \frac{x_1 + x_2}{2}, \quad v = \frac{y_1 + y_2}{2}$$
 - **Horizontal FOV Gating**: If no measured HFOV is configured in `rig_config.json`, the angles remain `DIRECTION UNCALIBRATED` to prevent false telemetry.
@@ -151,7 +151,7 @@ stateDiagram-v2
      $$\vec{r} = \left(\frac{\text{right}}{\|\vec{v}\|}, \frac{\text{up}}{\|\vec{v}\|}, \frac{1}{\|\vec{v}\|}\right)$$
 
 ### Step 8: Tactical GUI & Operator Overlays
-- **Files**: `tactical_gui.py` and `tracked_camera.py`
+- **Files**: `src/frequency_id/gui/` and `src/frequency_id/vision/tracked_camera.py`
 - **Camera Video Canvas**:
   - The followed drone is drawn in **Red** (`#4444ff` BGR): labeled `DRONE TRACKING | LAST YOLO 95% | 348.2 deg`.
   - Secondary / unconfirmed candidate detections are drawn in **Blue/Amber**: labeled `YOLO 88%`.
@@ -164,7 +164,7 @@ stateDiagram-v2
 
 ## 3. Standalone YOLO-Only Fallback (`--no-tracker`)
 
-If visual tracking is disabled (via `--no-tracker`), the system switches to the standalone `DroneCamera` pipeline in `vision_detector.py`:
+If visual tracking is disabled (via `--no-tracker`), the system switches to the standalone `DroneCamera` pipeline in `src/frequency_id/vision/detector.py`:
 - Evaluates YOLO detections on every camera frame.
 - Uses `DetectionLock` with a 120-pixel spatial gate.
 - Requires **3 consecutive frames** with matching bounding boxes before promoting the target from `ACQUIRING` to locked `DRONE`.

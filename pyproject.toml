@@ -48,6 +48,7 @@ frequency-id-jetson = "frequency_id.ops.jetson_ctl:main"
 where = ["src"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 pythonpath = ["src", "."]
 
 [tool.ruff]

@@ -1,15 +1,8 @@
-"""Tests of the decision logic and of the image/detection matching (no ROS, no model needed):
-    python3 -m pytest test/  (from the package folder)"""
-import os
-import sys
+"""Tests of the decision logic and of the image/detection matching (no ROS, no model needed)."""
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from frequency_id.vision.core import TrackerCore  # noqa: E402
-from frequency_id.vision.logic import Detection, TargetLogic  # noqa: E402
-
-
-def D(x, y, w=20, h=10, s=0.9):
-    return Detection((x, y, w, h), s, "car")
+from frequency_id.vision.core import TrackerCore
+from frequency_id.vision.logic import TargetLogic
+from tests.helpers import D, FakeTracker
 
 
 def test_first_target_is_the_most_confident():
@@ -37,21 +30,6 @@ def test_switch_to_another_car_is_caught():
     # the tracker jumped onto a car at 200,100 while the target is still detected near 100,100
     dec = lg.check((200, 100, 20, 10), [D(200, 100), D(102, 100)])
     assert dec.event == "correct" and dec.init_box == (102, 100, 20, 10) and lg.counts["switches"] == 1
-
-
-class FakeTracker:
-    """Moves its box 1 px to the right per update."""
-    def __init__(self):
-        self.box = None
-        self.inits = []
-
-    def init(self, frame, box):
-        self.box = list(box)
-        self.inits.append(tuple(box))
-
-    def update(self, frame):
-        self.box[0] += 1
-        return True, tuple(self.box), None
 
 
 def test_late_detections_are_matched_to_their_image_and_the_tracker_catches_up():

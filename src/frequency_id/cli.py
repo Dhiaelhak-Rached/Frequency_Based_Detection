@@ -102,7 +102,7 @@ def create_vision(
     cfg = geo.cfg.get("vision", {})
     if disabled or not cfg.get("enabled", True):
         return None
-    configured_model = model_path or cfg.get("model_path", "model/Yolo/best.pt")
+    configured_model = model_path or cfg.get("model_path", "model/yolo/best.pt")
     selected_camera = camera if camera is not None else cfg.get("camera", "0")
     configured_camera = str(normalize_camera_source(cfg.get("camera", "0")))
     camera_key = str(normalize_camera_source(selected_camera))

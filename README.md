@@ -99,11 +99,17 @@ be excluded with `active_channels`.
 
 ### 1. Install dependencies
 
-Python dependencies:
+Install the package in editable mode with the extras you need:
 
 ```bash
+# Core + vision + PX4 control + simulation + dev tools
+python3 -m pip install -e ".[vision,control,sim,dev]"
+
+# Or install core + full legacy requirements list
 python3 -m pip install -r requirements.txt
 ```
+
+This installs the `frequency-id`, `frequency-id-px4`, and `frequency-id-jetson` console commands alongside the backwards-compatible root shims (`main.py`, `px4_controller.py`, `jetson_ctl.py`). On first run, `rig_config.json` is automatically bootstrapped from `config/rig_config.example.json` if not yet present.
 
 Tkinter is supplied by the system Python. On Debian/Ubuntu, if it is missing:
 
@@ -224,8 +230,9 @@ to restore the original three-frame YOLO-only confirmation and proximity lock, o
 `--detector-every N` to change the verification interval.
 
 The pinned DyHiT source, checkpoint hash, and download command are documented in
-[`visual_tracking/UPSTREAM.md`](visual_tracking/UPSTREAM.md). Runtime dependencies are in
-`requirements.txt`; no ROS installation is required.
+[`docs/upstream-tracking.md`](docs/upstream-tracking.md) (see also [`docs/vision.md`](docs/vision.md)
+and [`docs/jetson.md`](docs/jetson.md)). Runtime dependencies are declared in `pyproject.toml`
+and `requirements.txt`; no ROS installation is required.
 
 ### Modes & Lock
 
@@ -334,7 +341,8 @@ The guidance sequence is:
 5. **TARGET_LOST_HOLD:** stale, repeated-only, uncertain, suppressed, or invalid acoustic input
    produces zero motion commands; old directions are not reused.
 
-The pure decision logic is in `guidance.py`. `px4_controller.py` is a separate MAVSDK-Python
+The pure decision logic is in `src/frequency_id/control/guidance.py`. `src/frequency_id/control/px4.py`
+(invokable via `python3 px4_controller.py` or `frequency-id-px4`) is a separate MAVSDK-Python
 process that monitors PX4 flight mode, position, local displacement, battery, and telemetry
 freshness. It never arms or takes off. The operator must provide an already hovering PX4 aircraft,
 an independent RC/manual override, and configured PX4 Offboard/RC/battery failsafes.
@@ -366,9 +374,8 @@ Slow speed alone is not a collision-avoidance mechanism.
 ## Verification
 
 ```bash
-# Complete automated suite: audio, geometry, elevation, vision, and tracking
+# Complete automated suite (122 tests: acoustics, vision, tracking, control, GUI, ops, sim)
 python3 -m pytest -q
-python3 -m pytest visual_tracking/upstream_tests -q
 
 # Physical rig geometry checks
 python3 main.py test-geometry
@@ -397,29 +404,24 @@ and room reflections; synthetic validation does not replace this hardware check.
 
 ## Project Structure
 
-| File | Responsibility |
+| Path | Responsibility |
 |---|---|
-| [`main.py`](main.py) | CLI/GUI launcher, arguments, model setup, and device listing |
-| [`guidance.py`](guidance.py) | Fail-closed acoustic angle-guidance state machine and motion limits |
-| [`px4_controller.py`](px4_controller.py) | Supervised MAVSDK/PX4 Offboard adapter and flight telemetry checks |
-| [`audio_manager.py`](audio_manager.py) | Timestamped multi-device capture and synthetic wavefield simulation |
-| [`detector.py`](detector.py) | Target-band FFT detection and ranked spectral peaks |
-| [`direction_suppression.py`](direction_suppression.py) | Front-only exclusion zones and alternate-target selection |
-| [`doa_engine.py`](doa_engine.py) | Azimuth, UMA-16 elevation, confidence tracking, and 3D vectors |
-| [`geometry.py`](geometry.py) | Array geometry and local/global coordinate transforms |
-| [`triangulation.py`](triangulation.py) | Weighted dual-array position and range estimation |
-| [`classifier.py`](classifier.py) | MobileNetV2 ONNX inference, resampling, and temporal voting |
-| [`vision_detector.py`](vision_detector.py) | Camera selection, background YOLO inference, and visual direction |
-| [`tracked_camera.py`](tracked_camera.py) | Asynchronous DyHiT/YOLO pipeline, bounded queues, directions, and metrics |
-| [`visual_tracking/`](visual_tracking/) | Pinned tracker core, decision logic, DyHiT source, checkpoint, and provenance |
-| [`tactical_gui.py`](tactical_gui.py) | Telemetry, radar, camera preview, 3D arrow, and organized settings |
-| [`rig_config.json`](rig_config.json) | Hardware geometry, detection, model, and camera configuration |
-| [`model/`](model/) | MobileNetV2 ONNX assets and YOLO `best.pt` checkpoint |
-| [`test_classifier.py`](test_classifier.py) | ONNX parity, resampling, voting, and acoustic integration tests |
-| [`test_vertical_uma16.py`](test_vertical_uma16.py) | Geometry, azimuth, elevation, and direction-vector regressions |
-| [`test_vision.py`](test_vision.py) | Vision filtering, target lock, direction, retry, and shutdown tests |
-| [`test_direction_suppression.py`](test_direction_suppression.py) | Exclusion zones, alternate peaks, tracker isolation, and display guards |
-| [`test_vision_tracking.py`](test_vision_tracking.py) | Asynchronous tracking, loss, confidence, queue, and failure regressions |
+| [`pyproject.toml`](pyproject.toml) | Package metadata, optional extras (`vision`, `control`, `sim`, `dev`), console scripts, `pytest` & `ruff` config |
+| [`main.py`](main.py), [`px4_controller.py`](px4_controller.py), [`jetson_ctl.py`](jetson_ctl.py) | Thin root compatibility shims forwarding to `frequency_id.cli`, `frequency_id.control.px4`, and `frequency_id.ops.jetson_ctl` |
+| [`config/rig_config.example.json`](config/rig_config.example.json) | Clean default rig configuration template (bootstraps local untracked `rig_config.json` on first run) |
+| [`src/frequency_id/paths.py`](src/frequency_id/paths.py) | Canonical project-root, config, model, report, and `PX4_DIR` path resolver |
+| [`src/frequency_id/telemetry.py`](src/frequency_id/telemetry.py) | Shared `@JSON:` telemetry and guidance payload serialization |
+| [`src/frequency_id/cli.py`](src/frequency_id/cli.py) | Unified CLI/GUI launcher, arguments, factories, and hardware diagnostics |
+| [`src/frequency_id/acoustics/`](src/frequency_id/acoustics/) | `geometry`, `audio_manager`, `detector`, `direction_suppression`, `doa_engine`, `triangulation`, `classifier` |
+| [`src/frequency_id/vision/`](src/frequency_id/vision/) | `detector` (YOLO11 & FOV projection), `tracked_camera` (async DyHiT/YOLO), `core`, `logic` |
+| [`src/frequency_id/control/`](src/frequency_id/control/) | `state_machine` (vision/audio fusion), `guidance` (fail-closed angle guidance), `px4` (MAVSDK Offboard adapter) |
+| [`src/frequency_id/gui/`](src/frequency_id/gui/) | Modular Tkinter UI: `app`, `widgets`, `sim_launcher`, `jetson_tab` |
+| [`src/frequency_id/ops/jetson_ctl.py`](src/frequency_id/ops/jetson_ctl.py) | Environment-driven SSH/rsync remote controller for the Jetson Orin rig |
+| [`sim/`](sim/) | PX4 SITL + Gazebo Garden simulation suite organized into `sensors/`, `harness/`, and `runners/` |
+| [`model/`](model/) | MobileNetV2 ONNX audio assets (`mobilenetv2_drone.onnx`, `metadata.json`, `reference_outputs.npz`) and `yolo/best.pt` |
+| [`visual_tracking/tracker_lib/`](visual_tracking/tracker_lib/) | Vendored DyHiT tracker library & checkpoint directory (`DyHiT_ep0060.pth.tar`, gitignored) |
+| [`tests/`](tests/) | Consolidated `pytest` suite (`tests/unit/{acoustics,vision,control,gui,ops}/`, `tests/sim/`, `conftest.py`, `helpers.py`) |
+| [`docs/`](docs/) | Deployment & architecture guides (`jetson.md`, `vision.md`, `upstream-tracking.md`, `reports/sitl_validation_report.md`) |
 
 ---
 

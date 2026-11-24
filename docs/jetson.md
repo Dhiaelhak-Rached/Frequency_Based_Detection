@@ -4,7 +4,7 @@
 
 You are the AI deployment agent. Deploy and verify the complete acoustic classification and triangulation system on the remote Jetson Orin through SSH. Work through this document sequentially and do not stop at copying the files: install dependencies, run the tests, configure both USB arrays, and verify the running application.
 
-The current classifier explicitly uses `CPUExecutionProvider` (`classifier.py:84-91`). Use CPU ONNX inference for this deployment. Do not attempt CUDA/TensorRT optimization during this task.
+The current classifier explicitly uses `CPUExecutionProvider` (`src/frequency_id/acoustics/classifier.py`). Use CPU ONNX inference for this deployment. Do not attempt CUDA/TensorRT optimization during this task.
 
 ## Mandatory execution rules for the agent
 
@@ -92,14 +92,14 @@ Do not rely on a partial source-only copy. These files must exist on the Jetson:
 model/mobilenetv2_drone.onnx
 model/metadata.json
 model/reference_outputs.npz
-classifier.py
-tracked_camera.py
-guidance.py
+model/yolo/best.pt
+config/rig_config.example.json
+src/frequency_id/
+main.py
 px4_controller.py
-visual_tracking/core.py
-visual_tracking/logic.py
+jetson_ctl.py
 visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar
-rig_config.json
+rig_config.json (auto-bootstrapped from config/rig_config.example.json if absent)
 ```
 
 ### 3. Install system and Python dependencies
@@ -160,8 +160,7 @@ Compare the audio hashes with `model/metadata.json`. The DyHiT checkpoint SHA-25
 
 ```bash
 python -m pytest -q
-python -m pytest visual_tracking/upstream_tests -q
-python -c "from visual_tracking.core import load_tracker; tracker, _ = load_tracker('visual_tracking/tracker_lib', 'dyhit'); print(tracker.device)"
+python -c "from frequency_id.vision.core import load_tracker; tracker, _ = load_tracker('visual_tracking/tracker_lib', 'dyhit'); print(tracker.device)"
 python main.py test-geometry
 python main.py simulate --target-x -0.6 --target-y 1.5
 python main.py list-cameras
@@ -169,7 +168,7 @@ python main.py list-cameras
 
 Expected results:
 
-- All project tests and 14 upstream tracker-core tests pass.
+- All 122 project and upstream tracker-core tests pass in a single `pytest` run.
 - The real DyHiT checkpoint loads and reports the expected CUDA device.
 - ONNX maximum probability error is below `0.001`.
 - Geometry reports 23 active microphones and 36.5 cm board separation.
