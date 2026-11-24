@@ -224,6 +224,14 @@ class VerticalArrayTest(unittest.TestCase):
         self.assertAlmostEqual(arr.mic_heights_local[0], -1.5 * grid)
         self.assertEqual(len(set(arr.mic_heights_local.values())), 4)
 
+    def test_uma8_microphone_heights_form_the_vertical_ring(self):
+        arr = RigGeometry().arrays["front"]
+        self.assertEqual(set(arr.mic_heights_local), set(range(7)))
+        self.assertAlmostEqual(arr.mic_heights_local[0], 0.0)
+        for ch, deg in UMA8_ANGLES.items():
+            self.assertAlmostEqual(arr.mic_heights_local[ch], 0.04275 * np.cos(np.deg2rad(deg)))
+        self.assertTrue(make_engine(arr).elevation_enabled)
+
     def test_uma16_elevation_and_unit_direction_vector(self):
         geo = RigGeometry()
         arr = geo.arrays["left"]
