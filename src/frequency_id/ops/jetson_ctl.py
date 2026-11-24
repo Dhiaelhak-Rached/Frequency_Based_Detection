@@ -558,6 +558,8 @@ def cmd_px4_test(target: JetsonTarget, args: argparse.Namespace) -> int:
         px4_args.extend(["--hover-s", str(args.hover_s)])
     if args.arm_only:
         px4_args.append("--arm-only")
+    if getattr(args, "virtual_rc", False):
+        px4_args.append("--virtual-rc")
     if args.auto_land is True:
         px4_args.append("--auto-land")
     elif args.auto_land is False:
@@ -646,6 +648,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_px4.add_argument("--takeoff-alt", type=float, default=None, help="Target takeoff altitude in meters")
     p_px4.add_argument("--hover-s", type=float, default=None, help="Hover duration in seconds")
     p_px4.add_argument("--arm-only", action="store_true", help="Arm engines briefly and disarm without taking off")
+    p_px4.add_argument(
+        "--virtual-rc",
+        action="store_true",
+        help="Stream neutral 20 Hz manual control inputs during bench arm-only test (requires --arm-only)",
+    )
     p_px4.add_argument("--auto-land", dest="auto_land", action="store_true", default=None, help="Auto-land after hover")
     p_px4.add_argument("--no-auto-land", dest="auto_land", action="store_false", help="Hold hover after takeoff")
     p_px4.add_argument("--authorize-arm", action="store_true", help="Explicitly authorize arming PX4 motors")

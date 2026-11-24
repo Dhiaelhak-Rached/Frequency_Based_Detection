@@ -32,6 +32,7 @@ def build_px4_test_command(
     hover_s: float = 5.0,
     auto_land: bool = True,
     arm_only: bool = False,
+    virtual_rc: bool = False,
     config_path=None,
 ) -> List[str]:
     cmd = [
@@ -50,6 +51,8 @@ def build_px4_test_command(
     ]
     if arm_only:
         cmd.append("--arm-only")
+    if virtual_rc:
+        cmd.append("--virtual-rc")
     if config_path is not None:
         cmd.extend(["--config", str(config_path)])
     return cmd
@@ -108,15 +111,20 @@ def build_px4_confirm_prompt(
     takeoff_alt_m: float,
     auto_land: bool,
     arm_only: bool,
+    virtual_rc: bool = False,
     remote_label: Optional[str] = None,
 ) -> str:
     mode_text = "Arm Only (Bench)" if arm_only else "Arm & Takeoff"
     auto_land_text = "Yes" if auto_land else "No (Hold Hover)"
     target_line = f"Target: {remote_label}\n" if remote_label else ""
+    virtual_rc_line = (
+        "Virtual RC (Bench): Yes (neutral 0,0,0,0)\n" if virtual_rc else ""
+    )
     return (
         f"{target_line}"
         f"PX4 URI: {connect_uri}\n"
         f"Mode: {mode_text}\n"
+        f"{virtual_rc_line}"
         f"Target Altitude: {takeoff_alt_m:.2f} m\n"
         f"Auto-Land: {auto_land_text}\n\n"
         "WARNING: Motors will spin immediately upon arming.\n"
@@ -124,6 +132,14 @@ def build_px4_confirm_prompt(
         "an RC transmitter ready to override at any time.\n\n"
         "Proceed with PX4 arm/takeoff test?"
     )
+
+
+def sync_px4_bench_toggles(var_arm_only, var_virtual_rc, changed: str) -> None:
+    """Keep Arm Only and Virtual RC bench checkboxes mutually consistent."""
+    if changed == "virtual_rc" and var_virtual_rc.get():
+        var_arm_only.set(True)
+    elif changed == "arm_only" and not var_arm_only.get():
+        var_virtual_rc.set(False)
 
 
 class PX4FlightTestMixin:
@@ -149,6 +165,11 @@ class PX4FlightTestMixin:
 
         auto_land = bool(self.var_px4_auto_land.get())
         arm_only = bool(self.var_px4_arm_only.get())
+        virtual_rc = bool(getattr(self, "var_px4_virtual_rc", None) and self.var_px4_virtual_rc.get())
+        if virtual_rc and not arm_only:
+            self.px4_status_lbl.configure(text="VIRTUAL RC REQUIRES ARM ONLY", fg=WARN)
+            return
+
         confirmed = messagebox.askyesno(
             "Confirm PX4 Motor Arm & Takeoff",
             build_px4_confirm_prompt(
@@ -156,6 +177,7 @@ class PX4FlightTestMixin:
                 takeoff_alt_m=alt,
                 auto_land=auto_land,
                 arm_only=arm_only,
+                virtual_rc=virtual_rc,
             ),
         )
         if not confirmed:
@@ -184,6 +206,7 @@ class PX4FlightTestMixin:
             hover_s=hover_s,
             auto_land=auto_land,
             arm_only=arm_only,
+            virtual_rc=virtual_rc,
             config_path=config_path,
         )
 

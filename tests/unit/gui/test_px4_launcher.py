@@ -58,7 +58,15 @@ class Root:
 
 
 class PX4LauncherTest(unittest.TestCase):
-    def make_gui(self, process=None, connect="udp://:14540", alt="2.5", auto_land=True, arm_only=False):
+    def make_gui(
+        self,
+        process=None,
+        connect="udp://:14540",
+        alt="2.5",
+        auto_land=True,
+        arm_only=False,
+        virtual_rc=False,
+    ):
         gui = object.__new__(TacticalGUI)
         gui.px4_test_process = process
         gui._px4_queue = queue.Queue()
@@ -68,6 +76,7 @@ class PX4LauncherTest(unittest.TestCase):
         gui.var_px4_alt = FakeVar(alt)
         gui.var_px4_auto_land = FakeVar(auto_land)
         gui.var_px4_arm_only = FakeVar(arm_only)
+        gui.var_px4_virtual_rc = FakeVar(virtual_rc)
         gui.px4_test_button = Widget()
         gui.px4_stop_button = Widget()
         gui.px4_status_lbl = Widget()
@@ -87,6 +96,7 @@ class PX4LauncherTest(unittest.TestCase):
                 hover_s=4.0,
                 auto_land=False,
                 arm_only=True,
+                virtual_rc=True,
                 config_path="/tmp/rig.json",
             )
         self.assertEqual(
@@ -105,6 +115,7 @@ class PX4LauncherTest(unittest.TestCase):
                 "4.0",
                 "--no-auto-land",
                 "--arm-only",
+                "--virtual-rc",
                 "--config",
                 "/tmp/rig.json",
             ],
@@ -172,6 +183,34 @@ class PX4LauncherTest(unittest.TestCase):
             gui_bad_alt.on_test_arm_takeoff()
         ask.assert_not_called()
         self.assertEqual(gui_bad_alt.px4_status_lbl.options["fg"], WARN)
+
+        gui_vrc_no_arm_only = self.make_gui(arm_only=False, virtual_rc=True)
+        with patch("frequency_id.gui.px4_launcher.messagebox.askyesno") as ask, patch(
+            "frequency_id.gui.px4_launcher.subprocess.Popen"
+        ) as popen:
+            gui_vrc_no_arm_only.on_test_arm_takeoff()
+        ask.assert_not_called()
+        popen.assert_not_called()
+        self.assertEqual(gui_vrc_no_arm_only.px4_status_lbl.options["text"], "VIRTUAL RC REQUIRES ARM ONLY")
+        self.assertEqual(gui_vrc_no_arm_only.px4_status_lbl.options["fg"], WARN)
+
+    def test_virtual_rc_toggle_sync_and_confirm_prompt(self):
+        var_arm = FakeVar(False)
+        var_vrc = FakeVar(True)
+        px4_launcher.sync_px4_bench_toggles(var_arm, var_vrc, "virtual_rc")
+        self.assertTrue(var_arm.get())
+        var_arm.set(False)
+        px4_launcher.sync_px4_bench_toggles(var_arm, var_vrc, "arm_only")
+        self.assertFalse(var_vrc.get())
+
+        prompt = px4_launcher.build_px4_confirm_prompt(
+            connect_uri="udp://:14540",
+            takeoff_alt_m=2.5,
+            auto_land=True,
+            arm_only=True,
+            virtual_rc=True,
+        )
+        self.assertIn("Virtual RC (Bench): Yes (neutral 0,0,0,0)", prompt)
 
     def test_confirmed_launch_streams_events_disables_duplicates_and_reenables_on_exit(self):
         events = [

@@ -112,6 +112,8 @@ class FakeDrone:
         self.core = self._Core(self)
         self.telemetry = self._Telemetry(self)
         self.action = self._Action(self)
+        self.manual_control_inputs = []
+        self.manual_control = self._ManualControl(self)
 
     async def connect(self, system_address=None):
         self.connected_address = system_address
@@ -227,6 +229,18 @@ class FakeDrone:
 
         async def kill(self):
             raise AssertionError("action.kill() must never be called")
+
+    class _ManualControl:
+        def __init__(self, parent):
+            self.parent = parent
+
+        async def set_manual_control_input(self, x, y, z, r):
+            self.parent.manual_control_inputs.append((x, y, z, r))
+            if (
+                getattr(self.parent, "virtual_rc_threshold", None) is not None
+                and len(self.parent.manual_control_inputs) >= self.parent.virtual_rc_threshold
+            ):
+                self.parent.health.is_armable = True
 
 
 def _parse_events(stdout_text: str):
@@ -583,6 +597,7 @@ class PX4TakeoffTest(unittest.TestCase):
             "--test-takeoff",
             "--authorize-arm",
             "--arm-only",
+            "--virtual-rc",
             "--takeoff-alt",
             "1.8",
             "--hover-s",
@@ -592,9 +607,52 @@ class PX4TakeoffTest(unittest.TestCase):
         self.assertTrue(diag.test_takeoff)
         self.assertTrue(diag.authorize_arm)
         self.assertTrue(diag.arm_only)
+        self.assertTrue(diag.virtual_rc)
         self.assertEqual(diag.takeoff_alt, 1.8)
         self.assertEqual(diag.hover_s, 3.0)
         self.assertIs(diag.auto_land, False)
+
+    def test_virtual_rc_requires_arm_only(self):
+        with self.assertRaises(ValueError) as ctx:
+            TakeoffTestConfig(arm_only=False, virtual_rc=True)
+        self.assertIn("--virtual-rc requires --arm-only", str(ctx.exception))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = self._write_config(tmpdir, {})
+            args = _make_args(cfg_path, arm_only=False, virtual_rc=True)
+            with self.assertRaises(ValueError):
+                asyncio.run(run_takeoff_test(args, drone_factory=lambda: FakeDrone()))
+
+    def test_virtual_rc_streams_neutral_inputs_until_armable_and_cleans_up(self):
+        bench_health = SimpleNamespace(
+            is_gyrometer_calibration_ok=True,
+            is_accelerometer_calibration_ok=True,
+            is_magnetometer_calibration_ok=True,
+            is_local_position_ok=False,
+            is_global_position_ok=False,
+            is_home_position_ok=False,
+            is_armable=False,
+        )
+        drone = FakeDrone(health=bench_health)
+        drone.virtual_rc_threshold = 3
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = self._write_config(tmpdir, {})
+            args = _make_args(cfg_path, arm_only=True, virtual_rc=True)
+            with patch.object(px4, "ARM_ONLY_HOLD_S", 0.04), patch.object(
+                px4, "TAKEOFF_POLL_INTERVAL_S", 0.01
+            ), patch.object(px4, "VIRTUAL_RC_INTERVAL_S", 0.01):
+                rc, events = self._run_with_capture(
+                    run_takeoff_test(args, drone_factory=lambda: drone)
+                )
+        self.assertEqual(rc, 0)
+        self.assertGreaterEqual(len(drone.manual_control_inputs), 3)
+        self.assertTrue(all(inp == (0.0, 0.0, 0.0, 0.0) for inp in drone.manual_control_inputs))
+        self.assertEqual(drone.actions, ["arm", "disarm"])
+        self.assertEqual(events[-1]["phase"], "PASSED")
+        # Confirm background task was cancelled and does not keep appending
+        count_after_return = len(drone.manual_control_inputs)
+        asyncio.run(asyncio.sleep(0.03))
+        self.assertEqual(len(drone.manual_control_inputs), count_after_return)
 
 
 if __name__ == "__main__":

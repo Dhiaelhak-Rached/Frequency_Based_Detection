@@ -29,7 +29,7 @@ from frequency_id.control.state_machine import (
     TrackingMode,
 )
 from frequency_id.gui.jetson_tab import JetsonRemoteTab
-from frequency_id.gui.px4_launcher import PX4_URI_PRESETS, PX4FlightTestMixin
+from frequency_id.gui.px4_launcher import PX4_URI_PRESETS, PX4FlightTestMixin, sync_px4_bench_toggles
 from frequency_id.gui.sim_launcher import SimulationLauncherMixin
 from frequency_id.gui.widgets import (
     ACCENT,
@@ -327,6 +327,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             activeforeground=FG,
         ).pack(side="left", padx=(0, 6))
         self.var_px4_arm_only = tk.BooleanVar(value=False)
+        self.var_px4_virtual_rc = tk.BooleanVar(value=False)
         tk.Checkbutton(
             px4_row,
             text="Arm Only (Bench)",
@@ -336,6 +337,18 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             selectcolor="#0d1117",
             activebackground=PANEL,
             activeforeground=FG,
+            command=lambda: sync_px4_bench_toggles(self.var_px4_arm_only, self.var_px4_virtual_rc, "arm_only"),
+        ).pack(side="left", padx=(0, 6))
+        tk.Checkbutton(
+            px4_row,
+            text="Virtual RC (Bench)",
+            variable=self.var_px4_virtual_rc,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+            command=lambda: sync_px4_bench_toggles(self.var_px4_arm_only, self.var_px4_virtual_rc, "virtual_rc"),
         ).pack(side="left", padx=(0, 10))
         self.px4_test_button = tk.Button(
             px4_row,

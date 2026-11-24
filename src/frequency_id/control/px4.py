@@ -41,6 +41,8 @@ ARM_ONLY_HOLD_S = 3.0
 LAND_CONFIRM_TIMEOUT_S = 30.0
 TAKEOFF_POLL_INTERVAL_S = 0.05
 TAKEOFF_EMIT_INTERVAL_S = 0.2
+VIRTUAL_RC_INTERVAL_S = 0.05
+VIRTUAL_RC_ARMABLE_WAIT_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class TakeoffTestConfig:
     min_battery_percent: float = 30.0
     arm_only: bool = False
     auto_land: bool = True
+    virtual_rc: bool = False
     guidance_max_altitude_m: float = 20.0
 
     def __post_init__(self):
@@ -74,6 +77,10 @@ class TakeoffTestConfig:
             raise ValueError("arm_only must be a bool")
         if not isinstance(self.auto_land, bool):
             raise ValueError("auto_land must be a bool")
+        if not isinstance(self.virtual_rc, bool):
+            raise ValueError("virtual_rc must be a bool")
+        if self.virtual_rc and not self.arm_only:
+            raise ValueError("--virtual-rc requires --arm-only for bench testing")
 
 
 def emit_test_event(phase: str, message: str, **extra) -> None:
@@ -285,7 +292,7 @@ class _PX4TakeoffTelemetry:
         }
 
 
-def _load_takeoff_test_config(args) -> tuple[TakeoffTestConfig, str]:
+def resolve_takeoff_test_config(args) -> tuple[TakeoffTestConfig, str]:
     raw_cfg: Dict[str, Any] = {}
     config_path = getattr(args, "config", None)
     if config_path:
@@ -341,9 +348,13 @@ def _load_takeoff_test_config(args) -> tuple[TakeoffTestConfig, str]:
         min_battery_percent=float(min_battery),
         arm_only=bool(getattr(args, "arm_only", False)),
         auto_land=bool(auto_land),
+        virtual_rc=bool(getattr(args, "virtual_rc", False)),
         guidance_max_altitude_m=guidance_max_alt,
     )
     return cfg, str(connect_uri)
+
+
+_load_takeoff_test_config = resolve_takeoff_test_config
 
 
 def _is_low_battery(battery_percent: float, min_battery_percent: float) -> bool:
@@ -420,6 +431,17 @@ async def _safe_disarm(drone, telemetry: _PX4TakeoffTelemetry, timeout_s: float)
     return False, "timed out waiting for disarm confirmation"
 
 
+async def _virtual_rc_loop(drone) -> None:
+    while True:
+        try:
+            await drone.manual_control.set_manual_control_input(0.0, 0.0, 0.0, 0.0)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(VIRTUAL_RC_INTERVAL_S)
+
+
 async def run_takeoff_test(
     args,
     drone_factory: Optional[Callable[[], Any]] = None,
@@ -428,7 +450,7 @@ async def run_takeoff_test(
     if not getattr(args, "authorize_arm", False):
         raise ValueError("--authorize-arm is required; arming PX4 motors is disabled by default")
 
-    cfg, connect_uri = _load_takeoff_test_config(args)
+    cfg, connect_uri = resolve_takeoff_test_config(args)
 
     if drone_factory is None:
         try:
@@ -455,6 +477,8 @@ async def run_takeoff_test(
 
     telemetry = _PX4TakeoffTelemetry(drone)
     watcher_tasks = telemetry.start_tasks()
+    if cfg.virtual_rc:
+        watcher_tasks.append(asyncio.create_task(_virtual_rc_loop(drone)))
     stop_event = cancel_event if cancel_event is not None else asyncio.Event()
     loop = asyncio.get_running_loop()
     registered_signals = []
@@ -508,6 +532,22 @@ async def run_takeoff_test(
                 )
                 return 1
             await asyncio.sleep(TAKEOFF_POLL_INTERVAL_S)
+
+        if cfg.virtual_rc and not bool(getattr(telemetry.health, "is_armable", False)):
+            armable_deadline = time.monotonic() + min(VIRTUAL_RC_ARMABLE_WAIT_S, cfg.connect_timeout_s)
+            while not bool(getattr(telemetry.health, "is_armable", False)):
+                if stop_event.is_set():
+                    emit_test_event(
+                        "ABORTED",
+                        "Test cancelled during virtual RC preflight wait",
+                        engines_started=False,
+                        takeoff_succeeded=False,
+                        **telemetry.snapshot(),
+                    )
+                    return 130
+                if time.monotonic() >= armable_deadline:
+                    break
+                await asyncio.sleep(TAKEOFF_POLL_INTERVAL_S)
 
         failing_checks = _check_preflight(telemetry, cfg)
         if failing_checks:
@@ -1054,6 +1094,11 @@ def build_parser():
         "--arm-only",
         action="store_true",
         help="bench test: arm engines briefly and disarm without taking off",
+    )
+    parser.add_argument(
+        "--virtual-rc",
+        action="store_true",
+        help="stream neutral 20 Hz MAVSDK manual control inputs during bench arm-only test (requires --arm-only)",
     )
     parser.add_argument(
         "--takeoff-alt",

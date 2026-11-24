@@ -108,6 +108,7 @@ class TestJetsonCtl(unittest.TestCase):
                 "--hover-s",
                 "4.0",
                 "--arm-only",
+                "--virtual-rc",
                 "--no-auto-land",
             ])
         self.assertEqual(rc, 0)
@@ -122,6 +123,8 @@ class TestJetsonCtl(unittest.TestCase):
                 "udp://:14540",
                 "--takeoff-alt",
                 "2.5",
+                "--arm-only",
+                "--virtual-rc",
                 "--auto-land",
             ])
         self.assertEqual(rc, 0)
@@ -130,6 +133,8 @@ class TestJetsonCtl(unittest.TestCase):
         self.assertIn("-tt", called_cmd)
         self.assertIn("px4_controller.py --test-takeoff --authorize-arm", called_cmd[-1])
         self.assertIn("--takeoff-alt 2.5", called_cmd[-1])
+        self.assertIn("--arm-only", called_cmd[-1])
+        self.assertIn("--virtual-rc", called_cmd[-1])
         self.assertIn("--auto-land", called_cmd[-1])
 
     def test_config_patch_validation_and_fields(self):
@@ -351,6 +356,25 @@ class TestJetsonCtl(unittest.TestCase):
             self.assertEqual(str(tab.px4_test_button.cget("state")), "normal")
             self.assertEqual(str(tab.px4_stop_button.cget("state")), "disabled")
             self.assertTrue(any("[PX4 AIRBORNE_HOVER]" in entry for entry in tab._log_history))
+
+            # Verify Virtual RC toggle sync and guard in JetsonRemoteTab
+            self.assertFalse(tab.var_px4_virtual_rc.get())
+            tab.var_px4_virtual_rc.set(True)
+            tab.var_px4_arm_only.set(False)
+            with patch("frequency_id.gui.jetson_tab.messagebox.askyesno") as ask:
+                tab.on_test_arm_takeoff()
+            ask.assert_not_called()
+            self.assertEqual(tab.px4_status_lbl.cget("text"), "VIRTUAL RC REQUIRES ARM ONLY")
+
+            tab.var_px4_arm_only.set(True)
+            with patch("frequency_id.gui.jetson_tab.messagebox.askyesno", return_value=True) as ask, patch(
+                "frequency_id.gui.jetson_tab.threading.Thread"
+            ) as thread_cls:
+                tab.on_test_arm_takeoff()
+            ask.assert_called_once()
+            self.assertIn("Virtual RC (Bench): Yes (neutral 0,0,0,0)", ask.call_args[0][1])
+            thread_cls.assert_called_once()
+            tab._px4_running = False
 
             # Verify camera label sizing switches cleanly between image pixels and text units
             import base64

@@ -21,6 +21,7 @@ from frequency_id.gui.px4_launcher import (
     build_px4_confirm_prompt,
     format_px4_test_status,
     parse_px4_test_line,
+    sync_px4_bench_toggles,
 )
 from frequency_id.gui.widgets import (
     ACCENT,
@@ -267,6 +268,7 @@ class JetsonRemoteTab:
             activeforeground=FG,
         ).pack(side="left", padx=(0, 6))
         self.var_px4_arm_only = tk.BooleanVar(value=False)
+        self.var_px4_virtual_rc = tk.BooleanVar(value=False)
         tk.Checkbutton(
             px4_row,
             text="Arm Only (Bench)",
@@ -276,6 +278,18 @@ class JetsonRemoteTab:
             selectcolor="#0d1117",
             activebackground=PANEL,
             activeforeground=FG,
+            command=lambda: sync_px4_bench_toggles(self.var_px4_arm_only, self.var_px4_virtual_rc, "arm_only"),
+        ).pack(side="left", padx=(0, 6))
+        tk.Checkbutton(
+            px4_row,
+            text="Virtual RC (Bench)",
+            variable=self.var_px4_virtual_rc,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+            command=lambda: sync_px4_bench_toggles(self.var_px4_arm_only, self.var_px4_virtual_rc, "virtual_rc"),
         ).pack(side="left", padx=(0, 10))
         self.px4_test_button = tk.Button(
             px4_row,
@@ -1281,6 +1295,11 @@ class JetsonRemoteTab:
 
         auto_land = bool(self.var_px4_auto_land.get())
         arm_only = bool(self.var_px4_arm_only.get())
+        virtual_rc = bool(getattr(self, "var_px4_virtual_rc", None) and self.var_px4_virtual_rc.get())
+        if virtual_rc and not arm_only:
+            self.px4_status_lbl.configure(text="VIRTUAL RC REQUIRES ARM ONLY", fg=WARN)
+            return
+
         target = self._target()
         confirmed = messagebox.askyesno(
             "Confirm PX4 Motor Arm & Takeoff",
@@ -1289,6 +1308,7 @@ class JetsonRemoteTab:
                 takeoff_alt_m=alt,
                 auto_land=auto_land,
                 arm_only=arm_only,
+                virtual_rc=virtual_rc,
                 remote_label=f"Jetson ({target.destination})",
             ),
         )
@@ -1308,6 +1328,8 @@ class JetsonRemoteTab:
         ]
         if arm_only:
             px4_args.append("--arm-only")
+        if virtual_rc:
+            px4_args.append("--virtual-rc")
 
         self._px4_running = True
         self._px4_stop_requested = False
