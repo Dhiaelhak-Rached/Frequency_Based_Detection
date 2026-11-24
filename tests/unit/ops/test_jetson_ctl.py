@@ -1,5 +1,8 @@
+import importlib
 import json
+import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +10,44 @@ from frequency_id.ops import jetson_ctl
 
 
 class TestJetsonCtl(unittest.TestCase):
+    def test_load_dotenv_sets_defaults_without_overriding_env_and_derives_remote_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "\n".join([
+                    "# comment line",
+                    "",
+                    "JETSON_HOST=192.0.2.10",
+                    'JETSON_PORT="2200"',
+                    "JETSON_USER='testpilot'",
+                    "JETSON_PASS='dummy-token'",
+                ]) + "\n",
+                encoding="utf-8",
+            )
+            env_keys = (
+                "JETSON_HOST",
+                "JETSON_PORT",
+                "JETSON_USER",
+                "JETSON_REMOTE_DIR",
+                "JETSON_DIR",
+                "JETSON_PASS",
+            )
+            clean_env = {k: v for k, v in os.environ.items() if k not in env_keys}
+            clean_env["JETSON_HOST"] = "override.example"
+            with patch.dict(os.environ, clean_env, clear=True), patch(
+                "frequency_id.paths.PROJECT_ROOT", Path(tmpdir)
+            ):
+                reloaded = importlib.reload(jetson_ctl)
+                try:
+                    self.assertEqual(reloaded.DEFAULT_HOST, "override.example")
+                    self.assertEqual(reloaded.DEFAULT_PORT, 2200)
+                    self.assertEqual(reloaded.DEFAULT_USER, "testpilot")
+                    self.assertEqual(reloaded.DEFAULT_REMOTE_DIR, "/home/testpilot/frequency_id")
+                    self.assertEqual(os.environ.get("JETSON_PASS"), "dummy-token")
+                finally:
+                    # Restore module defaults cleanly for subsequent tests
+                    pass
+            importlib.reload(jetson_ctl)
     def test_build_rsync_command_excludes_rig_config_by_default(self):
         target = jetson_ctl.JetsonTarget(
             host="jetson.example",

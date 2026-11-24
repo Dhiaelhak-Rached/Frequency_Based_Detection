@@ -23,11 +23,41 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from frequency_id.paths import PROJECT_ROOT
 
 
+def _load_dotenv(dotenv_path: Optional[Path] = None) -> None:
+    """Load KEY=VALUE pairs from ``PROJECT_ROOT/.env`` without overriding existing env vars."""
+    path = dotenv_path if dotenv_path is not None else PROJECT_ROOT / ".env"
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+
 DEFAULT_HOST = os.environ.get("JETSON_HOST", "jetson.local")
 DEFAULT_PORT = int(os.environ.get("JETSON_PORT", "2222"))
 DEFAULT_USER = os.environ.get("JETSON_USER", "jetson")
-DEFAULT_REMOTE_DIR = os.environ.get("JETSON_REMOTE_DIR") or os.environ.get(
-    "JETSON_DIR", "/home/jetson/frequency_id"
+DEFAULT_REMOTE_DIR = (
+    os.environ.get("JETSON_REMOTE_DIR")
+    or os.environ.get("JETSON_DIR")
+    or f"/home/{DEFAULT_USER}/frequency_id"
 )
 DEFAULT_LOG_PATH = "/tmp/frequency_id_cli.log"
 LOCAL_ROOT = PROJECT_ROOT
