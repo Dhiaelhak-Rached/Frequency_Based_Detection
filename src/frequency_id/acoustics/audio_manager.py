@@ -9,14 +9,13 @@ testing and verification without physical hardware.
 from dataclasses import dataclass
 import threading
 import time
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
 
-from frequency_id.acoustics.geometry import RigGeometry, SOUND_SPEED
+from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.paths import MODEL_DIR
 
 
@@ -96,7 +95,7 @@ class MultiDeviceAudioManager:
                 w16 = data["waveforms"][idx]
                 # Resample 16 kHz to rig sample rate (44.1 kHz)
                 self.sim_drone_wave = signal.resample_poly(w16, 441, 160).astype(np.float32)
-            except Exception as e:
+            except Exception:
                 self.sim_drone_wave = None
 
     def set_simulation_target(
@@ -287,7 +286,7 @@ class MultiDeviceAudioManager:
                     continue
                 # Spherical propagation delay
                 dist = np.linalg.norm(target_pos - mic_pos)
-                delay_s = dist / SOUND_SPEED
+                delay_s = dist / self.geo.sound_speed
                 # Inverse-square amplitude scaling + phase shift
                 amp = 0.5 / max(0.5, dist)
                 tone = 0.25 * amp * np.sin(2.0 * np.pi * freq * (t - delay_s))

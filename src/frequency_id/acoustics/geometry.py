@@ -12,6 +12,7 @@ Coordinate System:
 
 import json
 from dataclasses import dataclass, field
+import math
 from typing import Dict
 
 import numpy as np
@@ -28,9 +29,11 @@ class ArrayGeometry:
     array_type: str  # "uma8" or "uma16"
     center: np.ndarray  # shape (2,) [x, y] in meters
     orientation_deg: float  # flat rotation, or acoustic-face normal when vertical (deg)
-    local_mics: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [lx, ly] in local array frame
+    local_mics: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [lx, ly] or [lx, ly, lz]
     mic_positions: Dict[int, np.ndarray] = field(default_factory=dict)  # ch -> [gx, gy] in global coords
     mic_heights_local: Dict[int, float] = field(default_factory=dict)
+    channel_delays: Dict[int, float] = field(default_factory=dict)
+    phase_response: Dict[int, Dict[str, np.ndarray]] = field(default_factory=dict)
     mount: str = "flat"
 
 
@@ -44,10 +47,94 @@ class RigGeometry:
         with open(config_path, "r") as f:
             self.cfg = json.load(f)
 
-        self.sound_speed = float(self.cfg.get("sound_speed", 343.0))
+        configured_sound_speed = float(self.cfg.get("sound_speed", SOUND_SPEED))
+        if not math.isfinite(configured_sound_speed) or configured_sound_speed <= 0.0:
+            raise ValueError("Configured sound_speed must be finite and positive")
+        temperature = self.cfg.get("temperature_c")
+        self.sound_speed = configured_sound_speed
+        self.sound_speed_source = "configured"
+        if temperature is not None:
+            temperature = float(temperature)
+            if not math.isfinite(temperature):
+                raise ValueError("temperature_c must be finite or null")
+            self.sound_speed = 331.3 + 0.606 * temperature
+            self.sound_speed_source = "temperature_c"
+            if self.sound_speed <= 0.0:
+                raise ValueError("temperature_c produces a non-positive sound speed")
         self.sample_rate = int(self.cfg.get("sample_rate", 44100))
+        if self.sample_rate <= 0:
+            raise ValueError("sample_rate must be positive")
         self.arrays: Dict[str, ArrayGeometry] = {}
         self._build_geometry()
+
+    @staticmethod
+    def _channel_values(raw, channels, label):
+        values = {}
+        for key, value in (raw or {}).items():
+            try:
+                channel = int(key)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{label} channel keys must be integers") from exc
+            if str(key).strip() != str(channel) or channel not in channels:
+                raise ValueError(f"Unknown {label} channel: {key}")
+            values[channel] = value
+        return values
+
+    def _apply_array_calibration(self, cfg, arr):
+        calibration = cfg.get("calibration", {})
+        channels = set(arr.local_mics)
+        arr.channel_delays = {ch: 0.0 for ch in sorted(channels)}
+        delays = self._channel_values(
+            calibration.get("channel_delays_samples", {}), channels, "channel-delay"
+        )
+        for ch, value in delays.items():
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError("Channel delays must be finite samples")
+            arr.channel_delays[ch] = value
+
+        positions = self._channel_values(calibration.get("local_mics_m", {}), channels, "local-position")
+        for ch, value in positions.items():
+            position = np.asarray(value, dtype=float).reshape(-1)
+            if position.size not in (2, 3) or not np.all(np.isfinite(position)):
+                raise ValueError(f"Local microphone {ch} coordinates must be finite [lx, ly] or [lx, ly, lz]")
+            arr.local_mics[ch] = position
+            if position.size == 3:
+                arr.mic_heights_local[ch] = float(position[2])
+
+        heights = self._channel_values(
+            calibration.get("mic_heights_local_m", {}), channels, "local-height"
+        )
+        for ch, value in heights.items():
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError("Local microphone heights must be finite metres")
+            arr.mic_heights_local[ch] = value
+
+        if positions:
+            rot_rad = np.deg2rad(arr.orientation_deg)
+            u_long = np.array([np.sin(rot_rad), np.cos(rot_rad)])
+            u_short = np.array([np.cos(rot_rad), -np.sin(rot_rad)])
+            for ch in positions:
+                local = arr.local_mics[ch]
+                arr.mic_positions[ch] = arr.center + local[0] * u_long + local[1] * u_short
+
+        phase_cfg = calibration.get("phase_response", {})
+        frequencies = np.asarray(phase_cfg.get("frequencies_hz", []), dtype=float)
+        phases_by_channel = self._channel_values(
+            phase_cfg.get("phase_deg_by_channel", {}), channels, "phase-response"
+        )
+        if frequencies.ndim != 1 or not np.all(np.isfinite(frequencies)) or np.any(frequencies < 0.0):
+            raise ValueError("Phase-response frequencies must be finite, non-negative, and increasing")
+        if frequencies.size > 1 and np.any(np.diff(frequencies) <= 0.0):
+            raise ValueError("Phase-response frequencies must be strictly increasing")
+        if phases_by_channel and frequencies.size < 2:
+            raise ValueError("Phase-response interpolation requires at least two frequencies")
+        for ch, raw_phases in phases_by_channel.items():
+            phases = np.asarray(raw_phases, dtype=float)
+            if phases.ndim != 1 or phases.size != frequencies.size or not np.all(np.isfinite(phases)):
+                raise ValueError("Phase-response values must be finite and match frequencies_hz")
+            arr.phase_response[ch] = {"frequencies_hz": frequencies.copy(), "phase_deg": phases}
 
     def _build_geometry(self):
         arr_cfgs = self.cfg.get("arrays", {})
@@ -106,6 +193,7 @@ class RigGeometry:
             mic_heights_local=mic_heights_front,
             mount=front_mount,
         )
+        self._apply_array_calibration(front_cfg, self.arrays["front"])
 
         # 2. UMA-16 arrays. Channel N corresponds to PCB MIC N+1.
         # Rows run from the far end (0) to the USB end (3); columns run left to right.
@@ -162,6 +250,7 @@ class RigGeometry:
                 mic_heights_local=mic_heights_local,
                 mount=mount,
             )
+            self._apply_array_calibration(cfg, self.arrays[side])
 
     def set_uma16_front_only(self, enabled: bool):
         """Place the left UMA-16 at the forward rig origin, or restore its normal position."""

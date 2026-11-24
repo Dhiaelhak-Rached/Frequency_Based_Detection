@@ -19,6 +19,7 @@ from frequency_id.acoustics.direction_suppression import (
     select_front_only_target,
 )
 from frequency_id.acoustics.doa_engine import ArrayDOA
+from frequency_id.acoustics.doa_factory import create_doa_engine
 from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.acoustics.triangulation import TriangulationResult, Triangulator
 from frequency_id.control.state_machine import (
@@ -103,14 +104,10 @@ class TacticalGUI(SimulationLauncherMixin):
             threshold_dbfs=-65.0,
         )
         self.doa_engines: Dict[str, ArrayDOA] = {}
-        for arr_id, arr in self.geo.arrays.items():
-            self.doa_engines[arr_id] = ArrayDOA(
-                array_id=arr_id,
-                mic_positions_local=arr.local_mics,
-                orientation_deg=arr.orientation_deg,
-                sample_rate=geometry.sample_rate,
-                mount=arr.mount,
-            mic_heights_local=arr.mic_heights_local,
+        for arr_id in self.geo.arrays:
+            self.doa_engines[arr_id] = create_doa_engine(
+                self.geo,
+                arr_id,
                 freq_lo=200.0,
                 freq_hi=16000.0,
             )
@@ -731,14 +728,9 @@ class TacticalGUI(SimulationLauncherMixin):
 
         self._update_suppression_controls()
         self.geo.set_uma16_front_only(self.var_uma16_front_only.get())
-        arr = self.geo.arrays["left"]
-        self.doa_engines["left"] = ArrayDOA(
-            array_id="left",
-            mic_positions_local=arr.local_mics,
-            orientation_deg=arr.orientation_deg,
-            sample_rate=self.geo.sample_rate,
-            mount=arr.mount,
-            mic_heights_local=arr.mic_heights_local,
+        self.doa_engines["left"] = create_doa_engine(
+            self.geo,
+            "left",
             freq_lo=200.0,
             freq_hi=16000.0,
         )
@@ -854,6 +846,8 @@ class TacticalGUI(SimulationLauncherMixin):
                 self.doa_engines["left"],
                 (low, high),
                 self._current_suppression(),
+                captured_at=blocks["left"].captured_at,
+                now=time.monotonic(),
             )
             det_res = selection.detection
             if selection.suppressed:
@@ -884,6 +878,8 @@ class TacticalGUI(SimulationLauncherMixin):
                     blocks[arr_id].samples,
                     target_freq=target_f,
                     band=(low, high),
+                    captured_at=blocks[arr_id].captured_at,
+                    now=now,
                 )
                 doa_results[arr_id] = res
                 bearings[arr_id] = res.global_angle_deg

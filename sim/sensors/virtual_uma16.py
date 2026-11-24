@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -15,8 +14,9 @@ from frequency_id.acoustics.direction_suppression import (
     DirectionSuppression,
     select_front_only_target,
 )
-from frequency_id.acoustics.doa_engine import ArrayDOA, DOAResult
-from frequency_id.acoustics.geometry import RigGeometry, SOUND_SPEED
+from frequency_id.acoustics.doa_engine import DOAResult
+from frequency_id.acoustics.doa_factory import create_doa_engine
+from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.telemetry import build_guidance_payload
 
 
@@ -110,13 +110,9 @@ class VirtualUMA16Sensor:
             average_blocks=self.sensor.average_blocks,
             threshold_dbfs=self.sensor.threshold_dbfs,
         )
-        self.doa_engine = ArrayDOA(
-            array_id=self.arr.array_id,
-            mic_positions_local=self.arr.local_mics,
-            orientation_deg=self.arr.orientation_deg,
-            sample_rate=self.geo.sample_rate,
-            mount=self.arr.mount,
-            mic_heights_local=self.arr.mic_heights_local,
+        self.doa_engine = create_doa_engine(
+            self.geo,
+            self.arr.array_id,
             freq_lo=self.sensor.band_low_hz,
             freq_hi=self.sensor.band_high_hz,
         )
@@ -192,7 +188,7 @@ class VirtualUMA16Sensor:
             phase_offset = (now * 2.0 * math.pi * self.sensor.target_freq_hz) % (2.0 * math.pi)
             for ch, mic_pos in self.mic_coords_3d.items():
                 d_ch = float(np.linalg.norm(perturbed_rel - mic_pos))
-                delay_ch = d_ch / SOUND_SPEED
+                delay_ch = d_ch / self.geo.sound_speed
                 sig = amp * np.sin(
                     2.0 * math.pi * self.sensor.target_freq_hz * (self.t_vec - delay_ch) + phase_offset
                 )
@@ -220,7 +216,7 @@ class VirtualUMA16Sensor:
                 dtype=np.float64,
             )
             for ch, mic_pos in self.mic_coords_3d.items():
-                delay_p = -float(np.dot(mic_pos, p_dir)) / SOUND_SPEED
+                delay_p = -float(np.dot(mic_pos, p_dir)) / self.geo.sound_speed
                 prop_tone = prop_amp * np.sin(
                     2.0 * math.pi * self.sensor.propeller_freq_hz * (self.t_vec - delay_p)
                 )
@@ -285,6 +281,8 @@ class VirtualUMA16Sensor:
             self.doa_engine,
             band,
             self.suppression,
+            captured_at=audio_block.captured_at,
+            now=now,
         )
         doa_res = selection.doa
         if self.sensor.force_low_elev_prominence and doa_res is not None:

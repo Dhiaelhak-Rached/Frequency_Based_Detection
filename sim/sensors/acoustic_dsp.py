@@ -10,7 +10,7 @@ import numpy as np
 
 from frequency_id.acoustics.audio_manager import AudioBlock
 from frequency_id.acoustics.detector import FrequencyDetector
-from frequency_id.acoustics.doa_engine import ArrayDOA, SOUND_SPEED
+from frequency_id.acoustics.doa_factory import create_doa_engine
 from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.telemetry import build_guidance_payload
 from sim.sensors.virtual_uma16 import ideal_body_angles, ned_to_body_rig
@@ -49,13 +49,10 @@ class AcousticWavefieldDOASensor:
             average_blocks=2,
             threshold_dbfs=self.cfg.threshold_dbfs,
         )
-        self.doa = ArrayDOA(
-            array_id="left",
-            mic_positions_local=self.arr.local_mics,
-            orientation_deg=self.arr.orientation_deg,
+        self.doa = create_doa_engine(
+            self.geo,
+            "left",
             sample_rate=self.cfg.sample_rate,
-            mount=self.arr.mount,
-            mic_heights_local=self.arr.mic_heights_local,
         )
         # Body-rig 3D capsule coordinates: (right_m, forward_m=0, up_m)
         self._mic_body = {
@@ -98,7 +95,7 @@ class AcousticWavefieldDOASensor:
         for ch, mic_pos in self._mic_body.items():
             if target_active:
                 dist = float(np.linalg.norm(rel_body - mic_pos))
-                delay_s = dist / SOUND_SPEED
+                delay_s = dist / self.geo.sound_speed
                 tone = sig_amp * np.sin(2.0 * np.pi * self.cfg.tone_freq_hz * (t - delay_s))
             else:
                 tone = 0.0
@@ -117,6 +114,8 @@ class AcousticWavefieldDOASensor:
                 target_freq=det_res.peak_freq,
                 band=(self.cfg.band_low_hz, self.cfg.band_high_hz),
                 track=True,
+                captured_at=now_val,
+                now=now_val,
             )
 
         self.sequence += 1

@@ -34,7 +34,7 @@ from frequency_id.acoustics.direction_suppression import (
     displayable_doa,
     select_front_only_target,
 )
-from frequency_id.acoustics.doa_engine import ArrayDOA
+from frequency_id.acoustics.doa_factory import create_doa_engine
 from frequency_id.acoustics.geometry import RigGeometry, vector_to_bearing
 from frequency_id.acoustics.triangulation import Triangulator
 from frequency_id.control.state_machine import (
@@ -404,15 +404,7 @@ def cmd_cli(args):
     single_id = selected_ids[0] if len(selected_ids) == 1 else None
     doa_engines = {}
     for arr_id in selected_ids:
-        arr = geo.arrays[arr_id]
-        doa_engines[arr_id] = ArrayDOA(
-            array_id=arr_id,
-            mic_positions_local=arr.local_mics,
-            orientation_deg=arr.orientation_deg,
-            sample_rate=geo.sample_rate,
-            mount=arr.mount,
-            mic_heights_local=arr.mic_heights_local,
-        )
+        doa_engines[arr_id] = create_doa_engine(geo, arr_id)
     triangulator = Triangulator(geometry=geo, min_prominence=1.8)
     audio_mgr = MultiDeviceAudioManager(
         geometry=geo,
@@ -425,6 +417,7 @@ def cmd_cli(args):
     print(f" {geo.arrays[single_id].name} Direction Tracker" if single_id else " Dual-Array Acoustic Triangulation Tracker")
     print(f" Target Band: {args.low:g} - {args.high:g} Hz | Threshold: {args.threshold:g} dBFS")
     print(f" Capture: {'SIMULATION' if args.simulate else 'HARDWARE'} | Arrays: {', '.join(selected_ids)}")
+    print(f" Sound Speed: {geo.sound_speed:.3f} m/s ({geo.sound_speed_source})")
     print(f" Classifier: {'ACTIVE' if classifier else 'OFF'} | Require Drone: {args.require_drone}")
     print(f" Camera: {vision.camera if vision else 'OFF'}")
     if suppression.enabled:
@@ -491,6 +484,8 @@ def cmd_cli(args):
                     doa_engines["left"],
                     (args.low, args.high),
                     suppression,
+                    captured_at=blocks["left"].captured_at,
+                    now=now,
                 )
                 det_res = selection.detection
                 if selection.suppressed:
@@ -525,6 +520,8 @@ def cmd_cli(args):
                             blocks[arr_id].samples,
                             target_freq=det_res.peak_freq,
                             band=(args.low, args.high),
+                            captured_at=blocks[arr_id].captured_at,
+                            now=now,
                         )
                         results[arr_id] = res
                         bearings[arr_id] = res.global_angle_deg
@@ -597,17 +594,7 @@ def cmd_simulate(args):
     audio_mgr.set_simulation_target(x=args.target_x, y=args.target_y, freq_hz=args.freq, snr_db=args.snr)
 
     detector = FrequencyDetector(sample_rate=geo.sample_rate, threshold_dbfs=-65.0)
-    doa_engines = {
-        arr_id: ArrayDOA(
-            arr_id,
-            arr.local_mics,
-            arr.orientation_deg,
-            geo.sample_rate,
-            mount=arr.mount,
-            mic_heights_local=arr.mic_heights_local,
-        )
-        for arr_id, arr in geo.arrays.items()
-    }
+    doa_engines = {arr_id: create_doa_engine(geo, arr_id) for arr_id in geo.arrays}
     triangulator = Triangulator(geo, min_prominence=1.5)
     try:
         classifier = create_classifier(geo)
@@ -640,7 +627,12 @@ def cmd_simulate(args):
         proms = {}
         stable = {}
         for arr_id, doa in doa_engines.items():
-            res = doa.estimate(blocks[arr_id].samples, target_freq=det_res.peak_freq, band=(args.freq - 100, args.freq + 100))
+            res = doa.estimate(
+                blocks[arr_id].samples,
+                target_freq=det_res.peak_freq,
+                band=(args.freq - 100, args.freq + 100),
+                captured_at=blocks[arr_id].captured_at,
+            )
             bearings[arr_id] = res.global_angle_deg
             proms[arr_id] = res.prominence
             stable[arr_id] = res.stable
@@ -683,7 +675,7 @@ def cmd_test_geometry(args):
     geo = RigGeometry()
     print("===================================================================")
     print(" Rig Geometry & Microphone Array Configuration")
-    print(f" Sound Speed: {geo.sound_speed} m/s | Sample Rate: {geo.sample_rate} Hz")
+    print(f" Sound Speed: {geo.sound_speed} m/s ({geo.sound_speed_source}) | Sample Rate: {geo.sample_rate} Hz")
     print("===================================================================\n")
 
     for arr_id, arr in geo.arrays.items():

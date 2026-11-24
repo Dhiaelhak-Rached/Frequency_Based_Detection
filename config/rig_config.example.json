@@ -1,6 +1,7 @@
 {
   "name": "Dual-Array Acoustic Rig",
   "sound_speed": 343.0,
+  "temperature_c": null,
   "sample_rate": 44100,
   "physical_measurements": {
     "reference": "XMOS board to XMOS board",
@@ -115,6 +116,15 @@
         5,
         6
       ],
+      "calibration": {
+        "channel_delays_samples": {},
+        "local_mics_m": {},
+        "mic_heights_local_m": {},
+        "phase_response": {
+          "frequencies_hz": [],
+          "phase_deg_by_channel": {}
+        }
+      },
       "device_index": 0,
       "device_hint": "miniDSP micArray"
     },
@@ -151,6 +161,15 @@
         14,
         15
       ],
+      "calibration": {
+        "channel_delays_samples": {},
+        "local_mics_m": {},
+        "mic_heights_local_m": {},
+        "phase_response": {
+          "frequencies_hz": [],
+          "phase_deg_by_channel": {}
+        }
+      },
       "device_index": 1,
       "device_hint": "UMA16v2",
       "cable": "black USB"

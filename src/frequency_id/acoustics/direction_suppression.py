@@ -82,11 +82,16 @@ def select_front_only_target(
     doa_engine,
     band: Tuple[float, float],
     suppression: DirectionSuppression,
+    captured_at=None,
+    now=None,
 ) -> TargetSelection:
+    timestamp_args = {}
+    if captured_at is not None or now is not None:
+        timestamp_args = {"captured_at": captured_at, "now": now}
     if not detection.detected:
         return TargetSelection(detection, None)
     if not suppression.enabled:
-        result = doa_engine.estimate(block, target_freq=detection.peak_freq, band=band)
+        result = doa_engine.estimate(block, target_freq=detection.peak_freq, band=band, **timestamp_args)
         return TargetSelection(detection, result)
 
     candidates = detection.peak_candidates
@@ -108,6 +113,7 @@ def select_front_only_target(
             target_freq=frequency,
             band=band,
             track=False,
+            **timestamp_args,
         )
         if suppression.contains(raw.global_angle_deg):
             continue
@@ -115,7 +121,7 @@ def select_front_only_target(
             fallback = candidate
         if not reliable_doa(raw):
             continue
-        tracked = doa_engine.estimate(block, target_freq=frequency, band=band)
+        tracked = doa_engine.estimate(block, target_freq=frequency, band=band, **timestamp_args)
         if not displayable_doa(tracked, suppression):
             return _suppressed_selection(detection)
         return TargetSelection(candidate, tracked)
@@ -125,6 +131,7 @@ def select_front_only_target(
             block,
             target_freq=fallback.peak_freq,
             band=band,
+            **timestamp_args,
         )
         if displayable_doa(tracked, suppression):
             return TargetSelection(fallback, tracked)
