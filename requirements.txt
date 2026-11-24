@@ -10,5 +10,5 @@ easydict
 yacs
 tensorboardX
 gdown
-mavsdk
+mavsdk<4
 pytest

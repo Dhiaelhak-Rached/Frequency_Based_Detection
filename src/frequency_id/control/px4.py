@@ -206,6 +206,7 @@ class _PX4TakeoffTelemetry:
         self.battery_received: bool = False
         self.health: Any = None
         self.px4_status_text: str = ""
+        self.rc_available: Optional[bool] = None
 
     def start_tasks(self):
         coros = [
@@ -220,6 +221,8 @@ class _PX4TakeoffTelemetry:
             coros.append(self._watch_landed_state())
         if hasattr(self.drone.telemetry, "status_text"):
             coros.append(self._watch_status_text())
+        if hasattr(self.drone.telemetry, "rc_status"):
+            coros.append(self._watch_rc_status())
         return [asyncio.create_task(coro) for coro in coros]
 
     async def _watch_armed(self):
@@ -262,6 +265,10 @@ class _PX4TakeoffTelemetry:
             if text:
                 self.px4_status_text = str(text)
 
+    async def _watch_rc_status(self):
+        async for value in self.drone.telemetry.rc_status():
+            self.rc_available = bool(getattr(value, "is_available", False))
+
     def snapshot(self) -> Dict[str, Any]:
         return {
             "armed": self.armed,
@@ -274,6 +281,7 @@ class _PX4TakeoffTelemetry:
                 round(self.battery_percent, 1) if math.isfinite(self.battery_percent) else None
             ),
             "px4_status_text": self.px4_status_text,
+            "rc_available": self.rc_available,
         }
 
 
@@ -360,21 +368,27 @@ def _check_preflight(telemetry: _PX4TakeoffTelemetry, cfg: TakeoffTestConfig) ->
         failing.append(
             f"low_battery({telemetry.battery_percent:.1f}%<{cfg.min_battery_percent:.1f}%)"
         )
-    flag_map = (
+    flag_map = [
         ("gyrometer", "is_gyrometer_calibration_ok"),
         ("accelerometer", "is_accelerometer_calibration_ok"),
         ("magnetometer", "is_magnetometer_calibration_ok"),
-        ("local_position", "is_local_position_ok"),
-        ("global_position", "is_global_position_ok"),
-        ("home_position", "is_home_position_ok"),
-        ("armable", "is_armable"),
-    )
+    ]
+    if not cfg.arm_only:
+        flag_map.extend([
+            ("local_position", "is_local_position_ok"),
+            ("global_position", "is_global_position_ok"),
+            ("home_position", "is_home_position_ok"),
+        ])
+    flag_map.append(("armable", "is_armable"))
+
     for label, attr in flag_map:
         if hasattr(health, attr):
             if not bool(getattr(health, attr)):
                 failing.append(label)
-        elif label in ("armable",) or (not cfg.arm_only and label in ("local_position", "home_position")):
+        elif label == "armable" or (not cfg.arm_only and label in ("local_position", "home_position")):
             failing.append(label)
+    if not is_armable and telemetry.rc_available is False:
+        failing.append("no_rc_input")
     return failing
 
 

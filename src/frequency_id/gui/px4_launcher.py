@@ -95,10 +95,10 @@ def format_px4_test_status(event: Dict) -> Tuple[str, str]:
             return ("PX4 ARM TEST PASSED", OK)
         return ("PX4 TEST PASSED", OK)
     if phase == "FAILED":
-        short_msg = message[:60] if message else ""
+        short_msg = message[:140] if message else ""
         return (f"PX4 FAILED: {short_msg}" if short_msg else "PX4 TEST FAILED", WARN)
     if phase == "ABORTED":
-        short_msg = message[:60] if message else ""
+        short_msg = message[:140] if message else ""
         return (f"PX4 ABORTED: {short_msg}" if short_msg else "PX4 TEST ABORTED", WARN)
     return (f"PX4 {phase}" if phase else "PX4 IDLE", MUTED)
 

@@ -27,10 +27,10 @@ vision = [
     "gdown",
 ]
 control = [
-    "mavsdk",
+    "mavsdk<4",
 ]
 sim = [
-    "mavsdk",
+    "mavsdk<4",
     "matplotlib",
     "pymavlink",
 ]

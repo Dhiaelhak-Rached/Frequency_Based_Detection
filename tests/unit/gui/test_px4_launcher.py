@@ -142,6 +142,14 @@ class PX4LauncherTest(unittest.TestCase):
             self.assertTrue(label)
             self.assertEqual(col, expected_color)
 
+        long_msg = "Preflight check failed: armable, no_rc_input | PX4: Preflight Fail: Manual control input lost or unavailable"
+        self.assertGreater(len(long_msg), 60)
+        long_label, long_col = format_px4_test_status(
+            {"type": "px4_test", "phase": "FAILED", "message": long_msg}
+        )
+        self.assertEqual(long_col, WARN)
+        self.assertEqual(long_label, f"PX4 FAILED: {long_msg}")
+
     def test_confirmation_dialog_cancel_prevents_subprocess_launch(self):
         gui = self.make_gui()
         with patch("frequency_id.gui.px4_launcher.messagebox.askyesno", return_value=False) as ask, patch(

@@ -377,6 +377,43 @@ class PX4TakeoffTest(unittest.TestCase):
         self.assertIn("Preflight Fail: Mag 0 uncalibrated", failed["message"])
         self.assertEqual(failed["px4_status_text"], "Preflight Fail: Mag 0 uncalibrated")
 
+    def test_arm_only_omits_position_flags_and_surfaces_no_rc_input(self):
+        unhealthy = SimpleNamespace(
+            is_gyrometer_calibration_ok=True,
+            is_accelerometer_calibration_ok=True,
+            is_magnetometer_calibration_ok=True,
+            is_local_position_ok=False,
+            is_global_position_ok=False,
+            is_home_position_ok=False,
+            is_armable=False,
+        )
+        drone = FakeDrone(health=unhealthy)
+
+        async def rc_status():
+            yield SimpleNamespace(is_available=False)
+            while True:
+                await asyncio.sleep(0.05)
+
+        drone.telemetry.rc_status = rc_status
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = self._write_config(tmpdir, {"guidance": {"max_altitude_m": 20.0}})
+            args = _make_args(cfg_path, arm_only=True)
+            with patch.object(px4, "TAKEOFF_POLL_INTERVAL_S", 0.01):
+                rc, events = self._run_with_capture(
+                    run_takeoff_test(args, drone_factory=lambda: drone)
+                )
+        self.assertNotEqual(rc, 0)
+        self.assertNotIn("arm", drone.actions)
+        failed = events[-1]
+        self.assertEqual(failed["phase"], "FAILED")
+        self.assertEqual(failed["failing_checks"], ["armable", "no_rc_input"])
+        self.assertIn("armable", failed["message"])
+        self.assertIn("no_rc_input", failed["message"])
+        self.assertNotIn("local_position", failed["message"])
+        self.assertNotIn("global_position", failed["message"])
+        self.assertNotIn("home_position", failed["message"])
+
     def test_arm_only_flow_arms_and_disarms_without_takeoff(self):
         # Also test missing "px4" section fallback and arm_only not requiring local/home position
         bench_health = SimpleNamespace(
