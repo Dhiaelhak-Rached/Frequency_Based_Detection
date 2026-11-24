@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
-from typing import Union
+from typing import Optional, Union
 
 
 def get_project_root() -> Path:
@@ -35,12 +35,53 @@ REPORTS_DIR: Path = PROJECT_ROOT / "sim" / "reports"
 TRACKER_LIB_DIR: Path = PROJECT_ROOT / "visual_tracking" / "tracker_lib"
 
 
+def _get_git_common_worktree_root(root: Path) -> Optional[Path]:
+    """If ``root`` is a linked git worktree, return the primary checkout root."""
+    dot_git = root / ".git"
+    if not dot_git.is_file():
+        return None
+    try:
+        content = dot_git.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not content.startswith("gitdir:"):
+        return None
+    raw_gitdir = content.split(":", 1)[1].strip()
+    gitdir = Path(raw_gitdir)
+    if not gitdir.is_absolute():
+        gitdir = (root / gitdir).resolve()
+    else:
+        gitdir = gitdir.resolve()
+    # Linked worktrees point to <common_git_dir>/worktrees/<name>.
+    if gitdir.parent.name != "worktrees":
+        return None
+    common_git_dir = gitdir.parent.parent
+    if common_git_dir.name != ".git":
+        return None
+    main_root = common_git_dir.parent
+    return main_root if main_root.is_dir() and main_root != root else None
+
+
 def resolve_project_path(value: Union[str, Path]) -> Path:
-    """Resolve a path relative to the project root (or return it unchanged if absolute)."""
+    """Resolve a path relative to the project root (or return it unchanged if absolute).
+
+    When running inside a linked git worktree, untracked large assets (such as
+    downloaded model checkpoints) that are absent from the worktree fall back to
+    the same relative path in the primary checkout if present there.
+    """
     path = Path(value).expanduser()
     if path.is_absolute():
         return path
-    return get_project_root() / path
+    root = get_project_root()
+    candidate = root / path
+    if candidate.exists():
+        return candidate
+    main_root = _get_git_common_worktree_root(root)
+    if main_root is not None:
+        shared_candidate = main_root / path
+        if shared_candidate.exists():
+            return shared_candidate
+    return candidate
 
 
 def get_px4_dir() -> Path:

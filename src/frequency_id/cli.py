@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import json
+from pathlib import Path
 import time
 import tkinter as tk
 
@@ -41,7 +42,7 @@ from frequency_id.control.state_machine import (
     TargetStateMachine,
     format_fused_state,
 )
-from frequency_id.paths import resolve_project_path
+from frequency_id.paths import get_project_root, resolve_project_path
 from frequency_id.telemetry import (
     build_guidance_payload,
     build_telemetry_payload,
@@ -53,6 +54,23 @@ from frequency_id.vision.tracked_camera import TrackedDroneCamera
 
 def resolve_config_path(geo, value):
     return resolve_project_path(value)
+
+
+def resolve_vision_model_path(geo, configured_model):
+    """Resolve the YOLO model path, handling legacy ``model/Yolo/...`` config entries."""
+    raw = Path(configured_model).expanduser()
+    if raw.is_absolute():
+        return raw
+    root = get_project_root()
+    local_candidate = root / raw
+    if local_candidate.is_file():
+        return local_candidate
+    if len(raw.parts) >= 2 and raw.parts[0] == "model" and raw.parts[1] == "Yolo":
+        normalized = Path("model", "yolo", *raw.parts[2:])
+        normalized_candidate = root / normalized
+        if normalized_candidate.is_file():
+            return normalized_candidate
+    return resolve_config_path(geo, configured_model)
 
 
 def create_classifier(geo, model_path=None, disabled=False):
@@ -118,7 +136,7 @@ def create_vision(
             else None
         )
     common = dict(
-        model_path=resolve_config_path(geo, configured_model),
+        model_path=resolve_vision_model_path(geo, configured_model),
         camera=selected_camera,
         confidence=float(cfg.get("confidence", 0.5)),
         inference_hz=float(cfg.get("inference_hz", 10.0)),

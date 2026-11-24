@@ -1,11 +1,16 @@
+import os
+from pathlib import Path
+import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
 from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.cli import create_vision
+from frequency_id.paths import resolve_project_path
 from tests.helpers import FakeModel, FakePrediction
 from frequency_id.vision.tracked_camera import LatestRequestQueue, TrackedDroneCamera, TrackingSettings
 from frequency_id.vision.detector import DroneCamera
@@ -172,6 +177,41 @@ class VisionTrackingTest(unittest.TestCase):
             TrackingSettings(name="unknown")
         with self.assertRaises(ValueError):
             TrackingSettings(max_catch_up=3, buffer_size=4)
+
+    def test_create_vision_accepts_legacy_yolo_casing(self):
+        geo = RigGeometry()
+        geo.cfg.setdefault("vision", {})["model_path"] = "model/Yolo/best.pt"
+        vision = create_vision(geo, camera=0, no_tracker=True)
+        self.assertIsInstance(vision, DroneCamera)
+        self.assertTrue(vision.model_path.is_file())
+        self.assertEqual(vision.model_path.parts[-3:], ("model", "yolo", "best.pt"))
+
+    def test_resolve_project_path_falls_back_to_linked_git_worktree_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            main_repo = base / "main_repo"
+            worktree = base / "worktree"
+            git_wt_dir = main_repo / ".git" / "worktrees" / "audit"
+            git_wt_dir.mkdir(parents=True)
+            worktree.mkdir()
+            (worktree / "pyproject.toml").write_text("[project]\nname='frequency-id'\n")
+            (worktree / ".git").write_text(f"gitdir: {git_wt_dir}\n")
+
+            rel_ckpt = Path("visual_tracking/tracker_lib/trackers/dyhit/models/DyHiT_ep0060.pth.tar")
+            shared_ckpt = main_repo / rel_ckpt
+            shared_ckpt.parent.mkdir(parents=True)
+            shared_ckpt.write_bytes(b"ckpt")
+
+            with patch.dict(os.environ, {"FREQUENCY_ID_ROOT": str(worktree)}):
+                self.assertEqual(resolve_project_path(rel_ckpt), shared_ckpt)
+                self.assertEqual(
+                    resolve_project_path("does/not/exist.bin"),
+                    worktree / "does/not/exist.bin",
+                )
+                local_ckpt = worktree / rel_ckpt
+                local_ckpt.parent.mkdir(parents=True)
+                local_ckpt.write_bytes(b"local")
+                self.assertEqual(resolve_project_path(rel_ckpt), local_ckpt)
 
 
 if __name__ == "__main__":
