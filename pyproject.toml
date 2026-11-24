@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frequency-id"
+version = "0.1.0"
+description = "Multimodal drone detection, acoustic localization, 3D sound direction, visual tracking, and PX4 angle guidance."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "sounddevice",
+    "onnxruntime",
+    "Pillow",
+]
+
+[project.optional-dependencies]
+vision = [
+    "ultralytics",
+    "opencv-python",
+    "timm==0.5.4",
+    "easydict",
+    "yacs",
+    "tensorboardX",
+    "gdown",
+]
+control = [
+    "mavsdk",
+]
+sim = [
+    "mavsdk",
+    "matplotlib",
+    "pymavlink",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+frequency-id = "frequency_id.cli:main"
+frequency-id-px4 = "frequency_id.control.px4:main"
+frequency-id-jetson = "frequency_id.ops.jetson_ctl:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["src", "sim", "tests"]
+exclude = ["visual_tracking/tracker_lib/external"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
