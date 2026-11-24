@@ -34,7 +34,8 @@ htmlcov/
 *.local.json
 rig_config.json
 
-# Generated simulation outputs
+# Generated simulation outputs and local acoustic replay recordings
+data/doa_replay/
 sim/reports/plots/
 sim/reports/*.csv
 sim/reports/*.log

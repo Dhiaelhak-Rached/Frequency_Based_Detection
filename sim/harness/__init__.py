@@ -1,1 +1,1 @@
-"""PX4 SITL + Gazebo Garden harness and 3D visualization utilities."""
+"""PX4/Gazebo harnesses, visualization, and offline DOA replay utilities."""

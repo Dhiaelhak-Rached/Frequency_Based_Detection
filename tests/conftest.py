@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import wave
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC_DIR = _REPO_ROOT / "src"
@@ -107,3 +108,16 @@ def plane_wave_block(
 
 def circular_angle_error(actual, expected):
     return abs((actual - expected + 180.0) % 360.0 - 180.0)
+
+
+def write_pcm16_wav(path, samples, sample_rate=44100):
+    samples = np.asarray(samples, dtype=float)
+    if samples.ndim != 2:
+        raise ValueError("WAV fixtures must have shape (frames, channels)")
+    pcm = np.rint(np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(samples.shape[1])
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(pcm.tobytes())
+    return Path(path)
