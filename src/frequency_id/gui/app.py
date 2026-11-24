@@ -3,10 +3,11 @@
 
 from dataclasses import replace
 import json
+import queue
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -28,21 +29,17 @@ from frequency_id.control.state_machine import (
     TrackingMode,
 )
 from frequency_id.gui.jetson_tab import JetsonRemoteTab
-from frequency_id.gui.sim_launcher import SimulationLauncherMixin, build_simulation_command
+from frequency_id.gui.px4_launcher import PX4_URI_PRESETS, PX4FlightTestMixin
+from frequency_id.gui.sim_launcher import SimulationLauncherMixin
 from frequency_id.gui.widgets import (
     ACCENT,
     BG,
     BORDER,
     DRONE_RED,
     FG,
-    GRID_COLOR,
     MUTED,
     OK,
     PANEL,
-    RAY_FRONT,
-    RAY_LEFT,
-    RAY_RIGHT,
-    SUPPRESSION_MAGENTA,
     UNKNOWN_AMBER,
     WARN,
     draw_direction_3d_canvas,
@@ -56,7 +53,7 @@ from frequency_id.vision.detector import (
 )
 
 
-class TacticalGUI(SimulationLauncherMixin):
+class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
     def __init__(
         self,
         root: tk.Tk,
@@ -125,6 +122,10 @@ class TacticalGUI(SimulationLauncherMixin):
         self.sim_process = None
         self._sim_paused_vision = False
         self._sim_paused_audio = False
+        self.px4_test_process = None
+        self._px4_queue: queue.Queue = queue.Queue()
+        self._px4_terminal_event = None
+        self._px4_reader_thread = None
 
         self._build_ui()
         if self.vision is not None and self.var_vision_enabled.get():
@@ -290,6 +291,87 @@ class TacticalGUI(SimulationLauncherMixin):
         )
         self.slider_zoom.set(int(self.map_scale))
         self.slider_zoom.pack(side="right", padx=4)
+
+        px4_cfg = self.geo.cfg.get("px4", {}) if isinstance(self.geo.cfg.get("px4"), dict) else {}
+        px4_row = tk.Frame(ctrl, bg=PANEL)
+        px4_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Label(px4_row, text="PX4 URI:", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
+        self.var_px4_connect = tk.StringVar(value=str(px4_cfg.get("connect", "udp://:14540")))
+        self.px4_connect_combo = ttk.Combobox(
+            px4_row,
+            textvariable=self.var_px4_connect,
+            values=list(PX4_URI_PRESETS),
+            width=26,
+        )
+        self.px4_connect_combo.pack(side="left", padx=(0, 8))
+        tk.Label(px4_row, text="Alt (m):", bg=PANEL, fg=FG).pack(side="left", padx=(2, 2))
+        self.var_px4_alt = tk.StringVar(value=f"{float(px4_cfg.get('takeoff_altitude_m', 2.5)):g}")
+        self.px4_alt_entry = tk.Entry(
+            px4_row,
+            textvariable=self.var_px4_alt,
+            width=5,
+            bg="#0d1117",
+            fg=FG,
+            insertbackground=FG,
+        )
+        self.px4_alt_entry.pack(side="left", padx=(0, 8))
+        self.var_px4_auto_land = tk.BooleanVar(value=bool(px4_cfg.get("auto_land", True)))
+        tk.Checkbutton(
+            px4_row,
+            text="Auto-Land",
+            variable=self.var_px4_auto_land,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(side="left", padx=(0, 6))
+        self.var_px4_arm_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            px4_row,
+            text="Arm Only (Bench)",
+            variable=self.var_px4_arm_only,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(side="left", padx=(0, 10))
+        self.px4_test_button = tk.Button(
+            px4_row,
+            text="TEST ARM & TAKEOFF",
+            font=("Helvetica", 10, "bold"),
+            bg="#9e6a03",
+            fg="#ffffff",
+            activebackground="#bb8009",
+            padx=12,
+            pady=3,
+            command=self.on_test_arm_takeoff,
+            relief="flat",
+        )
+        self.px4_test_button.pack(side="left", padx=(0, 4))
+        self.px4_stop_button = tk.Button(
+            px4_row,
+            text="LAND / STOP",
+            font=("Helvetica", 10, "bold"),
+            bg=WARN,
+            fg="#ffffff",
+            activebackground="#da3633",
+            padx=10,
+            pady=3,
+            command=self.on_stop_px4_test,
+            relief="flat",
+            state="disabled",
+        )
+        self.px4_stop_button.pack(side="left", padx=(0, 8))
+        self.px4_status_lbl = tk.Label(
+            px4_row,
+            text="PX4 IDLE",
+            font=("Helvetica", 9, "bold"),
+            bg=PANEL,
+            fg=MUTED,
+        )
+        self.px4_status_lbl.pack(side="left", padx=4)
 
         settings = tk.LabelFrame(
             ctrl,
@@ -752,8 +834,8 @@ class TacticalGUI(SimulationLauncherMixin):
     def on_toggle_listening(self):
         if not self.is_active:
             try:
-                low = float(self.var_low.get())
-                high = float(self.var_high.get())
+                float(self.var_low.get())
+                float(self.var_high.get())
                 thresh = float(self.var_thresh.get())
                 avg = int(self.var_avg.get())
             except ValueError:
@@ -806,6 +888,20 @@ class TacticalGUI(SimulationLauncherMixin):
                 "tolerance_deg": suppression.tolerance_deg,
                 "max_peak_candidates": suppression.max_peak_candidates,
             }
+            if hasattr(self, "var_px4_connect"):
+                px4_section = self.geo.cfg.setdefault("px4", {})
+                connect_uri = self.var_px4_connect.get().strip()
+                if connect_uri:
+                    px4_section["connect"] = connect_uri
+                if hasattr(self, "var_px4_alt"):
+                    try:
+                        alt = float(self.var_px4_alt.get().strip())
+                        if 0.5 <= alt <= 5.0:
+                            px4_section["takeoff_altitude_m"] = alt
+                    except (TypeError, ValueError):
+                        pass
+                if hasattr(self, "var_px4_auto_land"):
+                    px4_section["auto_land"] = bool(self.var_px4_auto_land.get())
             with open(self.geo.config_path, "w") as f:
                 json.dump(self.geo.cfg, f, indent=2)
         except Exception:
@@ -1181,6 +1277,7 @@ class TacticalGUI(SimulationLauncherMixin):
 
 
     def on_close(self):
+        self._stop_px4_test()
         self._stop_simulation(restore_devices=False)
         self.jetson_remote.stop_if_running()
         self.audio_mgr.stop()

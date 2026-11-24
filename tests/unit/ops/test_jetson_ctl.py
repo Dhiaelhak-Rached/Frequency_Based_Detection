@@ -42,6 +42,55 @@ class TestJetsonCtl(unittest.TestCase):
         self.assertIn("nohup bash -lc", bg)
         self.assertIn("/tmp/frequency_id_cli.log", bg)
 
+    def test_build_remote_px4_test_command(self):
+        target = jetson_ctl.JetsonTarget(remote_dir="/home/jetson/frequency_id")
+        cmd = jetson_ctl.build_remote_px4_test_command(
+            target,
+            ["--test-takeoff", "--authorize-arm", "--connect", "serial:///dev/ttyTHS1:921600"],
+        )
+        self.assertEqual(
+            cmd,
+            "cd /home/jetson/frequency_id && PYTHONUNBUFFERED=1 .venv/bin/python -u px4_controller.py "
+            "--test-takeoff --authorize-arm --connect serial:///dev/ttyTHS1:921600",
+        )
+
+    def test_px4_test_cli_parsing_and_dry_run(self):
+        with patch("frequency_id.ops.jetson_ctl.subprocess.run") as mock_run:
+            rc = jetson_ctl.main([
+                "--dry-run",
+                "px4-test",
+                "--authorize-arm",
+                "--connect",
+                "serial:///dev/ttyACM0:57600",
+                "--takeoff-alt",
+                "2.0",
+                "--hover-s",
+                "4.0",
+                "--arm-only",
+                "--no-auto-land",
+            ])
+        self.assertEqual(rc, 0)
+        mock_run.assert_not_called()
+
+        with patch("frequency_id.ops.jetson_ctl.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            rc = jetson_ctl.main([
+                "px4-test",
+                "--authorize-arm",
+                "--connect",
+                "udp://:14540",
+                "--takeoff-alt",
+                "2.5",
+                "--auto-land",
+            ])
+        self.assertEqual(rc, 0)
+        called_cmd = mock_run.call_args[0][0]
+        self.assertEqual(called_cmd[0], "ssh")
+        self.assertIn("-tt", called_cmd)
+        self.assertIn("px4_controller.py --test-takeoff --authorize-arm", called_cmd[-1])
+        self.assertIn("--takeoff-alt 2.5", called_cmd[-1])
+        self.assertIn("--auto-land", called_cmd[-1])
+
     def test_config_patch_validation_and_fields(self):
         parser = jetson_ctl.build_parser()
         args = parser.parse_args([
@@ -208,6 +257,12 @@ class TestJetsonCtl(unittest.TestCase):
                         "horizontal_fov_deg": 75.0,
                         "tracker": {"enabled": True},
                     },
+                    "px4": {
+                        "connect": "serial:///dev/ttyTHS1:921600",
+                        "takeoff_altitude_m": 1.8,
+                        "auto_land": False,
+                        "hover_duration_s": 3.5,
+                    },
                 },
                 "audio_devices": [
                     {"index": 0, "name": "UMA16v2: USB Audio (hw:0,0)", "channels": 16, "sr": 44100},
@@ -223,6 +278,38 @@ class TestJetsonCtl(unittest.TestCase):
             self.assertEqual(tab.var_camera.get(), "rtsp://127.0.0.1:8554/drone")
             self.assertEqual(tab.var_avg.get(), "6")
             self.assertTrue(tab.var_tracker.get())
+            self.assertEqual(tab.var_px4_connect.get(), "serial:///dev/ttyTHS1:921600")
+            self.assertEqual(tab.var_px4_alt.get(), "1.8")
+            self.assertFalse(tab.var_px4_auto_land.get())
+
+            # Verify @PX4_TEST: lines update px4_status_lbl and px4_stopped re-enables button
+            tab._px4_running = True
+            tab.px4_test_button.configure(state="disabled")
+            tab.px4_stop_button.configure(state="normal")
+            tab._ui_queue.put((
+                "line",
+                "@PX4_TEST:" + json.dumps({
+                    "type": "px4_test",
+                    "phase": "AIRBORNE_HOVER",
+                    "message": "Hovering at 1.80 m",
+                    "altitude_m": 1.8,
+                }),
+            ))
+            tab._ui_queue.put((
+                "line",
+                "@PX4_TEST:" + json.dumps({
+                    "type": "px4_test",
+                    "phase": "PASSED",
+                    "message": "PX4 test passed",
+                }),
+            ))
+            tab._ui_queue.put(("px4_stopped", 0))
+            tab._drain_queue()
+            self.assertEqual(tab.px4_status_lbl.cget("text"), "PX4 TEST PASSED")
+            self.assertFalse(tab._px4_running)
+            self.assertEqual(str(tab.px4_test_button.cget("state")), "normal")
+            self.assertEqual(str(tab.px4_stop_button.cget("state")), "disabled")
+            self.assertTrue(any("[PX4 AIRBORNE_HOVER]" in entry for entry in tab._log_history))
 
             # Verify camera label sizing switches cleanly between image pixels and text units
             import base64

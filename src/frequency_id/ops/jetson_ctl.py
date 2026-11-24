@@ -178,6 +178,19 @@ def build_remote_cli_command(
     return base
 
 
+def build_remote_px4_test_command(
+    target: JetsonTarget,
+    px4_args: Sequence[str],
+) -> str:
+    """Build the remote shell command to run `px4_controller.py` inside Jetson's .venv."""
+    quoted_dir = shlex.quote(target.remote_dir)
+    args_str = " ".join(shlex.quote(arg) for arg in px4_args)
+    base = f"cd {quoted_dir} && PYTHONUNBUFFERED=1 .venv/bin/python -u px4_controller.py"
+    if args_str:
+        return f"{base} {args_str}"
+    return base
+
+
 def _run_cmd(cmd: List[str], dry_run: bool = False) -> int:
     if dry_run:
         print("[DRY-RUN]", " ".join(shlex.quote(c) for c in cmd))
@@ -503,6 +516,27 @@ def cmd_test(target: JetsonTarget, args: argparse.Namespace) -> int:
     return _run_cmd(build_ssh_command(target, remote_cmd), dry_run=args.dry_run)
 
 
+def cmd_px4_test(target: JetsonTarget, args: argparse.Namespace) -> int:
+    px4_args: List[str] = ["--test-takeoff"]
+    if args.authorize_arm:
+        px4_args.append("--authorize-arm")
+    if args.connect:
+        px4_args.extend(["--connect", str(args.connect)])
+    if args.takeoff_alt is not None:
+        px4_args.extend(["--takeoff-alt", str(args.takeoff_alt)])
+    if args.hover_s is not None:
+        px4_args.extend(["--hover-s", str(args.hover_s)])
+    if args.arm_only:
+        px4_args.append("--arm-only")
+    if args.auto_land is True:
+        px4_args.append("--auto-land")
+    elif args.auto_land is False:
+        px4_args.append("--no-auto-land")
+    remote_cmd = build_remote_px4_test_command(target, px4_args)
+    ssh_cmd = build_ssh_command(target, remote_cmd, tty=True)
+    return _run_cmd(ssh_cmd, dry_run=args.dry_run)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Remote control and configuration CLI for the Jetson Orin rig."
@@ -576,6 +610,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_test = sub.add_parser("test", help="Run unit tests on the Jetson")
     p_test.set_defaults(func=cmd_test)
+
+    p_px4 = sub.add_parser("px4-test", help="Run PX4 arm/takeoff diagnostic test on the Jetson")
+    p_px4.add_argument("--connect", default=None, help="MAVSDK PX4 connection address on Jetson")
+    p_px4.add_argument("--takeoff-alt", type=float, default=None, help="Target takeoff altitude in meters")
+    p_px4.add_argument("--hover-s", type=float, default=None, help="Hover duration in seconds")
+    p_px4.add_argument("--arm-only", action="store_true", help="Arm engines briefly and disarm without taking off")
+    p_px4.add_argument("--auto-land", dest="auto_land", action="store_true", default=None, help="Auto-land after hover")
+    p_px4.add_argument("--no-auto-land", dest="auto_land", action="store_false", help="Hold hover after takeoff")
+    p_px4.add_argument("--authorize-arm", action="store_true", help="Explicitly authorize arming PX4 motors")
+    p_px4.set_defaults(func=cmd_px4_test)
 
     return parser
 

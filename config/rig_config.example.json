@@ -55,6 +55,15 @@
     "geofence_radius_m": 25.0,
     "min_battery_percent": 30.0
   },
+  "px4": {
+    "connect": "udp://:14540",
+    "takeoff_altitude_m": 2.5,
+    "hover_duration_s": 5.0,
+    "connect_timeout_s": 10.0,
+    "takeoff_timeout_s": 20.0,
+    "auto_land": true,
+    "min_battery_percent": 30.0
+  },
   "classifier": {
     "enabled": true,
     "model_path": "model/mobilenetv2_drone.onnx",

@@ -3,19 +3,25 @@
 import base64
 import io
 import json
+import math
 import os
 import queue
 import re
 import shlex
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from typing import Dict, List, Optional
 
 from PIL import Image, ImageTk
 
-from frequency_id.acoustics.direction_suppression import DirectionSuppression
 from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.gui.px4_launcher import (
+    PX4_URI_PRESETS,
+    build_px4_confirm_prompt,
+    format_px4_test_status,
+    parse_px4_test_line,
+)
 from frequency_id.gui.widgets import (
     ACCENT,
     BG,
@@ -49,6 +55,10 @@ class JetsonRemoteTab:
         self._preview_running = False
         self._preview_stop_requested = False
         self._preview_restart = False
+        self._px4_running = False
+        self._px4_stop_requested = False
+        self._px4_terminal_event = None
+        self._px4_hover_s = 5.0
         self._tab_active = False
         self._initialized = False
         self.map_scale = 90.0
@@ -221,6 +231,87 @@ class JetsonRemoteTab:
         )
         self.slider_zoom.set(int(self.map_scale))
         self.slider_zoom.pack(side="right", padx=4)
+
+        px4_cfg = self.geo.cfg.get("px4", {}) if isinstance(self.geo.cfg.get("px4"), dict) else {}
+        px4_row = tk.Frame(ctrl, bg=PANEL)
+        px4_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Label(px4_row, text="PX4 URI:", bg=PANEL, fg=FG).pack(side="left", padx=(4, 2))
+        self.var_px4_connect = tk.StringVar(value=str(px4_cfg.get("connect", "udp://:14540")))
+        self.px4_connect_combo = ttk.Combobox(
+            px4_row,
+            textvariable=self.var_px4_connect,
+            values=list(PX4_URI_PRESETS),
+            width=26,
+        )
+        self.px4_connect_combo.pack(side="left", padx=(0, 8))
+        tk.Label(px4_row, text="Alt (m):", bg=PANEL, fg=FG).pack(side="left", padx=(2, 2))
+        self.var_px4_alt = tk.StringVar(value=f"{float(px4_cfg.get('takeoff_altitude_m', 2.5)):g}")
+        self.px4_alt_entry = tk.Entry(
+            px4_row,
+            textvariable=self.var_px4_alt,
+            width=5,
+            bg="#0d1117",
+            fg=FG,
+            insertbackground=FG,
+        )
+        self.px4_alt_entry.pack(side="left", padx=(0, 8))
+        self.var_px4_auto_land = tk.BooleanVar(value=bool(px4_cfg.get("auto_land", True)))
+        tk.Checkbutton(
+            px4_row,
+            text="Auto-Land",
+            variable=self.var_px4_auto_land,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(side="left", padx=(0, 6))
+        self.var_px4_arm_only = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            px4_row,
+            text="Arm Only (Bench)",
+            variable=self.var_px4_arm_only,
+            bg=PANEL,
+            fg=FG,
+            selectcolor="#0d1117",
+            activebackground=PANEL,
+            activeforeground=FG,
+        ).pack(side="left", padx=(0, 10))
+        self.px4_test_button = tk.Button(
+            px4_row,
+            text="TEST ARM & TAKEOFF",
+            font=("Helvetica", 10, "bold"),
+            bg="#9e6a03",
+            fg="#ffffff",
+            activebackground="#bb8009",
+            padx=12,
+            pady=3,
+            command=self.on_test_arm_takeoff,
+            relief="flat",
+        )
+        self.px4_test_button.pack(side="left", padx=(0, 4))
+        self.px4_stop_button = tk.Button(
+            px4_row,
+            text="LAND / STOP",
+            font=("Helvetica", 10, "bold"),
+            bg=WARN,
+            fg="#ffffff",
+            activebackground="#da3633",
+            padx=10,
+            pady=3,
+            command=self.on_stop_px4_test,
+            relief="flat",
+            state="disabled",
+        )
+        self.px4_stop_button.pack(side="left", padx=(0, 8))
+        self.px4_status_lbl = tk.Label(
+            px4_row,
+            text="PX4 IDLE",
+            font=("Helvetica", 9, "bold"),
+            bg=PANEL,
+            fg=MUTED,
+        )
+        self.px4_status_lbl.pack(side="left", padx=4)
 
         settings = tk.LabelFrame(
             ctrl, text=" Settings ", bg=PANEL, fg=ACCENT,
@@ -673,8 +764,31 @@ class JetsonRemoteTab:
                     elif payload.startswith("@PREVIEW:"):
                         if not self._cli_running and self.var_vision_enabled.get() and self.var_stream_video.get():
                             self._show_camera_frame_b64(payload[9:])
+                    elif payload.strip().startswith("@PX4_TEST:"):
+                        event = parse_px4_test_line(payload)
+                        if event is not None:
+                            text, color = format_px4_test_status(event)
+                            self.px4_status_lbl.configure(text=text, fg=color)
+                            if str(event.get("phase", "")).upper() in ("PASSED", "FAILED", "ABORTED"):
+                                self._px4_terminal_event = event
+                            self._log(f"[PX4 {event.get('phase', 'INFO')}] {event.get('message', '')}")
+                        else:
+                            self._log(payload)
                     else:
                         self._log(payload)
+                elif kind == "px4_stopped":
+                    rc = payload
+                    self._px4_running = False
+                    self.px4_test_button.configure(state="normal", text="TEST ARM & TAKEOFF")
+                    self.px4_stop_button.configure(state="disabled")
+                    if self._px4_terminal_event is None:
+                        if rc == 0:
+                            self.px4_status_lbl.configure(text="PX4 TEST PASSED", fg=OK)
+                        elif self._px4_stop_requested:
+                            self.px4_status_lbl.configure(text="PX4 TEST ABORTED", fg=WARN)
+                        else:
+                            self.px4_status_lbl.configure(text=f"PX4 FAILED ({rc})", fg=WARN)
+                    self._log(f"--- Remote PX4 test finished (exit {rc}) ---")
                 elif kind == "preview_stopped":
                     self._preview_running = False
                     if self._preview_restart:
@@ -758,6 +872,17 @@ class JetsonRemoteTab:
         self.var_sup_tol.set(f"{float(sup.get('tolerance_deg', 10.0)):g}")
         self.var_classifier.set(bool(cfg.get("classifier", {}).get("enabled", True)))
         self.var_tracker.set(bool(vis.get("tracker", {}).get("enabled", True)))
+
+        px4_cfg = cfg.get("px4", {}) if isinstance(cfg.get("px4"), dict) else {}
+        if px4_cfg:
+            if px4_cfg.get("connect"):
+                self.var_px4_connect.set(str(px4_cfg["connect"]))
+            if px4_cfg.get("takeoff_altitude_m") is not None:
+                self.var_px4_alt.set(f"{float(px4_cfg['takeoff_altitude_m']):g}")
+            if "auto_land" in px4_cfg:
+                self.var_px4_auto_land.set(bool(px4_cfg["auto_land"]))
+            if px4_cfg.get("hover_duration_s") is not None:
+                self._px4_hover_s = float(px4_cfg["hover_duration_s"])
 
         if not self._cli_running:
             self._redraw_static_views()
@@ -1136,8 +1261,92 @@ class JetsonRemoteTab:
             daemon=True,
         ).start()
 
+    def on_test_arm_takeoff(self):
+        if self._px4_running:
+            return
+
+        connect_uri = self.var_px4_connect.get().strip()
+        if not connect_uri:
+            self.px4_status_lbl.configure(text="INVALID PX4 URI", fg=WARN)
+            return
+
+        try:
+            alt = float(self.var_px4_alt.get().strip())
+        except (TypeError, ValueError):
+            self.px4_status_lbl.configure(text="INVALID ALT (0.5-5.0m)", fg=WARN)
+            return
+        if not math.isfinite(alt) or not (0.5 <= alt <= 5.0):
+            self.px4_status_lbl.configure(text="INVALID ALT (0.5-5.0m)", fg=WARN)
+            return
+
+        auto_land = bool(self.var_px4_auto_land.get())
+        arm_only = bool(self.var_px4_arm_only.get())
+        target = self._target()
+        confirmed = messagebox.askyesno(
+            "Confirm PX4 Motor Arm & Takeoff",
+            build_px4_confirm_prompt(
+                connect_uri=connect_uri,
+                takeoff_alt_m=alt,
+                auto_land=auto_land,
+                arm_only=arm_only,
+                remote_label=f"Jetson ({target.destination})",
+            ),
+        )
+        if not confirmed:
+            return
+
+        px4_args: List[str] = [
+            "--test-takeoff",
+            "--authorize-arm",
+            "--connect",
+            connect_uri,
+            "--takeoff-alt",
+            str(alt),
+            "--hover-s",
+            str(self._px4_hover_s),
+            "--auto-land" if auto_land else "--no-auto-land",
+        ]
+        if arm_only:
+            px4_args.append("--arm-only")
+
+        self._px4_running = True
+        self._px4_stop_requested = False
+        self._px4_terminal_event = None
+        self.px4_test_button.configure(state="disabled", text="PX4 TESTING...")
+        self.px4_stop_button.configure(state="normal")
+        self.px4_status_lbl.configure(text="PX4 CONNECTING...", fg=ACCENT)
+
+        remote_cmd = jetson_ctl.build_remote_px4_test_command(target, px4_args)
+        ssh_cmd = jetson_ctl.build_ssh_command(target, remote_cmd, tty=True)
+        password = self._password()
+
+        def worker():
+            self._ui_queue.put(("log", "--- Starting Remote PX4 Arm/Takeoff Test ---"))
+            rc = jetson_ctl.run_command_streaming(
+                ssh_cmd,
+                lambda line: self._ui_queue.put(("line", line)),
+                password=password,
+            )
+            self._ui_queue.put(("px4_stopped", rc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_stop_px4_test(self):
+        self._px4_stop_requested = True
+        self.px4_status_lbl.configure(text="STOPPING / LANDING...", fg=UNKNOWN_AMBER)
+        target = self._target()
+        cmd = jetson_ctl.build_ssh_command(
+            target, "pkill -INT -f 'px4_controller.py --test-takeoff' || true"
+        )
+        threading.Thread(
+            target=lambda: jetson_ctl.run_command_streaming(cmd, lambda _l: None, password=self._password()),
+            daemon=True,
+        ).start()
+
     def stop_if_running(self):
         self._restart_after_stop = False
         self._stop_preview()
+        if self._px4_running:
+            self.on_stop_px4_test()
         if self._cli_running:
             self.on_stop_cli()
