@@ -9,8 +9,8 @@ The current classifier explicitly uses `CPUExecutionProvider` (`classifier.py:84
 ## Mandatory execution rules for the agent
 
 1. Run all installation, configuration, and test commands on the remote Jetson through the SSH connection in step 0. Do not accidentally install Jetson dependencies or run the remote application on the local PC.
-2. The local PC is only the source of the project files and the SSH/rsync client. The local project root is `/home/dhia/Desktop/projects/freq_project/frequency_id`.
-3. Use the supplied credentials for non-interactive SSH as shown below. If SSH, sudo, or hardware access fails, report the exact error; do not claim the deployment succeeded.
+2. The local PC is only the source of the project files and the SSH/rsync client. Run sync commands from your local `frequency_id` repository root (referred to below as `$LOCAL_PROJECT_DIR`, e.g., `$(pwd)`).
+3. Use SSH key authentication (`ssh-copy-id` or `python3 jetson_ctl.py setup-ssh`) configured via environment variables as shown below. If SSH, sudo, or hardware access fails, report the exact error; do not claim the deployment succeeded.
 4. Execute the steps in order. After each step, inspect the command output and proceed only when that step passed. Do not hide errors, skip failing tests, or weaken test thresholds.
 5. Do not copy a local virtual environment or x86 Python wheels to the Jetson. Create a fresh ARM64 environment remotely.
 6. Do not change application code or physical geometry unless a concrete Jetson compatibility problem requires it. Audio device indices are expected to change.
@@ -25,29 +25,35 @@ Create a clean Python virtual environment on the Jetson, copy the complete proje
 
 ### 0. Connect to the Jetson
 
-Use these SSH connection details:
+Export your Jetson SSH connection details in your local shell (or put them in an untracked `.env` file — never commit hosts, usernames, or passwords):
 
-```text
-Host: 41.228.129.118
-Port: 2222
-Username: meltem
-Password: meltem123
-Remote project directory: /home/meltem/frequency_id
+```bash
+export JETSON_HOST="<jetson-ip-or-hostname>"
+export JETSON_PORT="2222"          # or 22 for default SSH
+export JETSON_USER="<jetson-user>"
+export JETSON_DIR="/home/${JETSON_USER}/frequency_id"
+```
+
+Set up passwordless SSH key authentication once (or use `python3 jetson_ctl.py setup-ssh`):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+ssh-copy-id -p "${JETSON_PORT}" "${JETSON_USER}@${JETSON_HOST}"
 ```
 
 Connect from the PC:
 
 ```bash
-ssh -p 2222 meltem@41.228.129.118
+ssh -p "${JETSON_PORT}" "${JETSON_USER}@${JETSON_HOST}"
 ```
 
-Enter the password above when prompted. Run every Jetson-side command in this guide through that SSH session. For non-interactive agent commands on a Linux PC, install `sshpass` if needed and use:
+Run non-interactive commands over key-authenticated SSH:
 
 ```bash
-SSHPASS='meltem123' sshpass -e ssh -p 2222 meltem@41.228.129.118 "<remote-command>"
+ssh -p "${JETSON_PORT}" "${JETSON_USER}@${JETSON_HOST}" "<remote-command>"
 ```
 
-This file contains a plaintext password; do not publish or commit it to a public repository.
+> **Security note:** Never store plaintext passwords or live public IP addresses in tracked repository files. Use SSH keys and environment variables (`JETSON_HOST`, `JETSON_PORT`, `JETSON_USER`, `JETSON_DIR`).
 
 ### 1. Check the Jetson baseline
 
@@ -65,17 +71,19 @@ Use a local monitor/desktop for GUI testing. SSH is suitable for installation an
 
 ### 2. Copy the complete project
 
-From the PC, copy the whole directory to the Jetson home directory. For non-interactive agent use with `sshpass`:
+From the PC repository root, copy the project to the Jetson using `python3 jetson_ctl.py sync` or `rsync` over key-authenticated SSH:
 
 ```bash
-SSHPASS='meltem123' sshpass -e rsync -av \
-  -e "ssh -p 2222" \
+rsync -avz \
+  -e "ssh -p ${JETSON_PORT}" \
   --exclude '.git' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude '.venv' \
-  /home/dhia/Desktop/projects/freq_project/frequency_id/ \
-  meltem@41.228.129.118:/home/meltem/frequency_id/
+  --exclude '.pytest_cache' \
+  --exclude 'rig_config.json' \
+  ./ \
+  "${JETSON_USER}@${JETSON_HOST}:${JETSON_DIR}/"
 ```
 
 Do not rely on a partial source-only copy. These files must exist on the Jetson:

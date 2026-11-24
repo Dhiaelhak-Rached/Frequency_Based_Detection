@@ -1644,9 +1644,11 @@ class JetsonRemoteTab:
         self.var_host = tk.StringVar(value=os.environ.get("JETSON_HOST", jetson_ctl.DEFAULT_HOST))
         self.var_port = tk.StringVar(value=os.environ.get("JETSON_PORT", str(jetson_ctl.DEFAULT_PORT)))
         self.var_user = tk.StringVar(value=os.environ.get("JETSON_USER", jetson_ctl.DEFAULT_USER))
-        self.var_dir = tk.StringVar(value=os.environ.get("JETSON_DIR", jetson_ctl.DEFAULT_REMOTE_DIR))
+        self.var_dir = tk.StringVar(
+            value=os.environ.get("JETSON_REMOTE_DIR") or os.environ.get("JETSON_DIR", jetson_ctl.DEFAULT_REMOTE_DIR)
+        )
         self.var_pass = tk.StringVar(
-            value=os.environ.get("JETSON_PASS") or os.environ.get("SSHPASS") or "meltem123"
+            value=os.environ.get("JETSON_PASS") or os.environ.get("SSHPASS") or ""
         )
         self.var_stream_video = tk.BooleanVar(value=True)
 

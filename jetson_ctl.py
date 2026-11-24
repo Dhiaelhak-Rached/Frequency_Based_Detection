@@ -21,10 +21,12 @@ import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
-DEFAULT_HOST = "41.228.129.118"
-DEFAULT_PORT = 2222
-DEFAULT_USER = "meltem"
-DEFAULT_REMOTE_DIR = "/home/meltem/frequency_id"
+DEFAULT_HOST = os.environ.get("JETSON_HOST", "jetson.local")
+DEFAULT_PORT = int(os.environ.get("JETSON_PORT", "2222"))
+DEFAULT_USER = os.environ.get("JETSON_USER", "jetson")
+DEFAULT_REMOTE_DIR = os.environ.get("JETSON_REMOTE_DIR") or os.environ.get(
+    "JETSON_DIR", "/home/jetson/frequency_id"
+)
 DEFAULT_LOG_PATH = "/tmp/frequency_id_cli.log"
 LOCAL_ROOT = Path(__file__).resolve().parent
 
@@ -506,7 +508,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=os.environ.get("JETSON_HOST", DEFAULT_HOST))
     parser.add_argument("--port", type=int, default=int(os.environ.get("JETSON_PORT", DEFAULT_PORT)))
     parser.add_argument("--user", default=os.environ.get("JETSON_USER", DEFAULT_USER))
-    parser.add_argument("--remote-dir", default=os.environ.get("JETSON_DIR", DEFAULT_REMOTE_DIR))
+    parser.add_argument(
+        "--remote-dir",
+        default=os.environ.get("JETSON_REMOTE_DIR") or os.environ.get("JETSON_DIR", DEFAULT_REMOTE_DIR),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print SSH/rsync commands without executing")
 
     sub = parser.add_subparsers(dest="command", required=True)

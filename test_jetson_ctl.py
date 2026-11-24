@@ -8,13 +8,18 @@ import jetson_ctl
 
 class TestJetsonCtl(unittest.TestCase):
     def test_build_rsync_command_excludes_rig_config_by_default(self):
-        target = jetson_ctl.JetsonTarget()
+        target = jetson_ctl.JetsonTarget(
+            host="jetson.example",
+            port=2222,
+            user="operator",
+            remote_dir="/home/operator/frequency_id",
+        )
         cmd = jetson_ctl.build_rsync_command(target, local_dir=Path("/tmp/src"))
         joined = " ".join(cmd)
         self.assertIn("--exclude rig_config.json", joined)
         self.assertIn("--exclude .venv", joined)
         self.assertIn("ssh -p 2222", joined)
-        self.assertTrue(cmd[-1].endswith("meltem@41.228.129.118:/home/meltem/frequency_id/"))
+        self.assertTrue(cmd[-1].endswith("operator@jetson.example:/home/operator/frequency_id/"))
 
     def test_build_rsync_command_includes_config_when_requested(self):
         target = jetson_ctl.JetsonTarget()
