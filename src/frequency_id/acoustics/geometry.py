@@ -12,8 +12,7 @@ Coordinate System:
 
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict
 
 import numpy as np
 
@@ -63,11 +62,13 @@ class RigGeometry:
         radius = float(front_cfg.get("radius_m", 0.0855))
         mics_local_front = {}
         mics_global_front = {}
+        mic_heights_front = {}
 
         # Default UMA-8 calibrated perimeter angles (degrees from reference axis)
         # ch0=center, ch4=10°, ch5=70°, ch6=130°, ch1=190°, ch2=250°, ch3=310°
         mics_local_front[0] = np.array([0.0, 0.0])
         mics_global_front[0] = c_front.copy()
+        mic_heights_front[0] = 0.0
         perimeter_map = {
             4: 10.0,
             5: 70.0,
@@ -85,8 +86,10 @@ class RigGeometry:
             if front_mount == "vertical":
                 mics_local_front[ch] = np.array([0.0, ly])
                 mics_global_front[ch] = c_front + ly * u_short
+                mic_heights_front[ch] = lx
             else:
                 mics_local_front[ch] = np.array([lx, ly])
+                mic_heights_front[ch] = 0.0
                 ang_global = np.deg2rad(rot_front + deg)
                 gx = c_front[0] + radius * np.sin(ang_global)
                 gy = c_front[1] + radius * np.cos(ang_global)
@@ -100,6 +103,7 @@ class RigGeometry:
             orientation_deg=rot_front,
             local_mics=mics_local_front,
             mic_positions=mics_global_front,
+            mic_heights_local=mic_heights_front,
             mount=front_mount,
         )
 

@@ -3,7 +3,7 @@ import time
 import numpy as np
 import pytest
 
-from frequency_id.acoustics.doa_engine import ArrayDOA, CircularTracker, ElevationTracker
+from frequency_id.acoustics.doa_engine import CircularTracker, ElevationTracker
 from tests.conftest import (
     circular_angle_error,
     make_uma16_doa,
