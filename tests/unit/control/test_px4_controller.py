@@ -320,6 +320,33 @@ class PX4TakeoffTest(unittest.TestCase):
             self.assertEqual(events[-1]["phase"], "FAILED")
             self.assertIn("low_battery", events[-1]["message"])
 
+    def test_unreported_negative_battery_passes_preflight_while_low_battery_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = self._write_config(tmpdir, {"guidance": {"max_altitude_m": 20.0}})
+            # -1.0 means unknown/unreported on hardware without a calibrated power module
+            drone_unknown = FakeDrone(battery_percent=-1.0)
+            args = _make_args(cfg_path, takeoff_alt=2.0, hover_s=0.05)
+            with patch.object(px4, "TAKEOFF_POLL_INTERVAL_S", 0.01), patch.object(
+                px4, "TAKEOFF_EMIT_INTERVAL_S", 0.01
+            ):
+                rc, events = self._run_with_capture(
+                    run_takeoff_test(args, drone_factory=lambda: drone_unknown)
+                )
+            self.assertEqual(rc, 0)
+            self.assertEqual(events[-1]["phase"], "PASSED")
+            self.assertIn("arm", drone_unknown.actions)
+
+            # Explicit low battery (15.0%) still fails preflight without arming
+            drone_low = FakeDrone(battery_percent=15.0)
+            with patch.object(px4, "TAKEOFF_POLL_INTERVAL_S", 0.01):
+                rc_low, events_low = self._run_with_capture(
+                    run_takeoff_test(args, drone_factory=lambda: drone_low)
+                )
+            self.assertNotEqual(rc_low, 0)
+            self.assertEqual(drone_low.actions, [])
+            self.assertEqual(events_low[-1]["phase"], "FAILED")
+            self.assertIn("low_battery", events_low[-1]["message"])
+
     def test_unarmable_health_reports_flags_and_status_text_without_arming(self):
         unhealthy = SimpleNamespace(
             is_gyrometer_calibration_ok=True,

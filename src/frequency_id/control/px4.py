@@ -338,12 +338,13 @@ def _load_takeoff_test_config(args) -> tuple[TakeoffTestConfig, str]:
     return cfg, str(connect_uri)
 
 
+def _is_low_battery(battery_percent: float, min_battery_percent: float) -> bool:
+    return math.isfinite(battery_percent) and 0.0 <= battery_percent < min_battery_percent
+
+
 def _check_preflight(telemetry: _PX4TakeoffTelemetry, cfg: TakeoffTestConfig) -> list[str]:
     health = telemetry.health
-    low_battery = (
-        math.isfinite(telemetry.battery_percent)
-        and telemetry.battery_percent < cfg.min_battery_percent
-    )
+    low_battery = _is_low_battery(telemetry.battery_percent, cfg.min_battery_percent)
     is_armable = bool(getattr(health, "is_armable", False))
     local_ok = bool(getattr(health, "is_local_position_ok", False))
     home_ok = bool(getattr(health, "is_home_position_ok", False))
@@ -748,10 +749,7 @@ async def run_takeoff_test(
                 return 130
             if stop_event.is_set():
                 break
-            if (
-                math.isfinite(telemetry.battery_percent)
-                and telemetry.battery_percent < cfg.min_battery_percent
-            ):
+            if _is_low_battery(telemetry.battery_percent, cfg.min_battery_percent):
                 low_battery_abort = True
                 break
             await asyncio.sleep(TAKEOFF_POLL_INTERVAL_S)
