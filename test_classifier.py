@@ -5,12 +5,13 @@ from pathlib import Path
 import numpy as np
 import scipy.signal as signal
 
-from audio_manager import MultiDeviceAudioManager
-from classifier import DroneClassifier
-from detector import FrequencyDetector
-from doa_engine import ArrayDOA
-from geometry import RigGeometry
-from triangulation import Triangulator
+from frequency_id.acoustics.audio_manager import MultiDeviceAudioManager
+from frequency_id.acoustics.classifier import DroneClassifier
+from frequency_id.acoustics.detector import FrequencyDetector
+from frequency_id.acoustics.doa_engine import ArrayDOA
+from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.acoustics.triangulation import Triangulator
+from frequency_id.paths import MODEL_DIR
 
 
 class FakeSession:
@@ -26,7 +27,7 @@ class ClassifierTest(unittest.TestCase):
     def setUpClass(cls):
         cls.geo = RigGeometry()
         cls.classifier = DroneClassifier(sample_rate=cls.geo.sample_rate)
-        cls.reference_path = Path(__file__).resolve().parent / "model" / "reference_outputs.npz"
+        cls.reference_path = MODEL_DIR / "reference_outputs.npz"
 
     def test_onnx_numerical_accuracy(self):
         passed, max_diff = self.classifier.validate_against_reference(

@@ -1,7 +1,7 @@
 """The low-latency order of tracker_node: pre_image() decides and the image is forwarded BEFORE the tracker runs.
 The images sent and the decisions must be exactly the same as with the original order (decide after the tracker)."""
-from visual_tracking.core import TrackerCore
-from visual_tracking.logic import TargetLogic
+from frequency_id.vision.core import TrackerCore
+from frequency_id.vision.logic import TargetLogic
 from test_logic import D, FakeTracker
 
 

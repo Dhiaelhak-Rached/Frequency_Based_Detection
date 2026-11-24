@@ -2,8 +2,8 @@ from dataclasses import dataclass, replace
 import math
 from typing import Optional, Tuple
 
-from detector import DetectionResult
-from doa_engine import DOAResult
+from frequency_id.acoustics.detector import DetectionResult
+from frequency_id.acoustics.doa_engine import DOAResult
 
 
 @dataclass(frozen=True)

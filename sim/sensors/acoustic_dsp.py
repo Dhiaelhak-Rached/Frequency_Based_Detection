@@ -8,12 +8,12 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from audio_manager import AudioBlock
-from detector import FrequencyDetector
-from doa_engine import ArrayDOA, SOUND_SPEED
-from geometry import RigGeometry
-from main import build_guidance_payload
-from sim.virtual_uma16 import ideal_body_angles, ned_to_body_rig
+from frequency_id.acoustics.audio_manager import AudioBlock
+from frequency_id.acoustics.detector import FrequencyDetector
+from frequency_id.acoustics.doa_engine import ArrayDOA, SOUND_SPEED
+from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.telemetry import build_guidance_payload
+from sim.sensors.virtual_uma16 import ideal_body_angles, ned_to_body_rig
 
 
 @dataclass(frozen=True)

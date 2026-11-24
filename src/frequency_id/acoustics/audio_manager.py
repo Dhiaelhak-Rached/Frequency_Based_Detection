@@ -16,7 +16,8 @@ import numpy as np
 import scipy.signal as signal
 import sounddevice as sd
 
-from geometry import RigGeometry, SOUND_SPEED
+from frequency_id.acoustics.geometry import RigGeometry, SOUND_SPEED
+from frequency_id.paths import MODEL_DIR
 
 
 @dataclass(frozen=True)
@@ -85,9 +86,7 @@ class MultiDeviceAudioManager:
 
     def _load_sim_drone_audio(self):
         """Preload realistic drone sound from reference outputs for synthetic wavefield."""
-        ref_path = Path(__file__).resolve().parent / "model" / "reference_outputs.npz"
-        if not ref_path.exists():
-            ref_path = Path("/home/dhia/Desktop/projects/MobileNetV2/model/reference_outputs.npz")
+        ref_path = MODEL_DIR / "reference_outputs.npz"
         if ref_path.exists():
             try:
                 data = np.load(ref_path)

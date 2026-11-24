@@ -2,8 +2,12 @@ import json
 from types import SimpleNamespace
 import unittest
 
-from guidance import GuidanceConfig
-from px4_controller import PX4FlightMonitor, parse_telemetry_line, validate_observation_metadata
+from frequency_id.control.guidance import GuidanceConfig
+from frequency_id.control.px4 import (
+    PX4FlightMonitor,
+    parse_telemetry_line,
+    validate_observation_metadata,
+)
 
 
 class TelemetryParsingTest(unittest.TestCase):

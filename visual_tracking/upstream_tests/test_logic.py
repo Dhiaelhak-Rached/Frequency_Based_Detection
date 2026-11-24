@@ -4,8 +4,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from visual_tracking.core import TrackerCore  # noqa: E402
-from visual_tracking.logic import Detection, TargetLogic  # noqa: E402
+from frequency_id.vision.core import TrackerCore  # noqa: E402
+from frequency_id.vision.logic import Detection, TargetLogic  # noqa: E402
 
 
 def D(x, y, w=20, h=10, s=0.9):

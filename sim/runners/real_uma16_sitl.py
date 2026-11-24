@@ -9,8 +9,8 @@ import csv
 from pathlib import Path
 from typing import List, Optional
 
-from sim.real_uma16 import RealUMA16Config, RealUMA16Source
-from sim.sitl_harness import (
+from sim.sensors.real_uma16 import RealUMA16Config, RealUMA16Source
+from sim.harness.sitl_harness import (
     AttitudeWatcher,
     PX4SitlProcess,
     REPO_ROOT,
@@ -19,7 +19,7 @@ from sim.sitl_harness import (
     connect_sitl_drone,
     run_sitl_guidance_scenario,
 )
-from sim.visualizer import SimRecord
+from sim.harness.visualizer import SimRecord
 
 
 DEFAULT_PLOT_PATH = REPO_ROOT / "sim" / "reports" / "plots" / "real_uma16_hil.png"

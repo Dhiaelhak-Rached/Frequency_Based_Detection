@@ -8,9 +8,16 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from vision_detector import DroneCamera, VisionDetection, VisionResult, detection_center, pixel_to_direction
-from visual_tracking.core import TrackerCore
-from visual_tracking.logic import Detection, TargetLogic
+from frequency_id.paths import resolve_project_path
+from frequency_id.vision.core import TrackerCore
+from frequency_id.vision.detector import (
+    DroneCamera,
+    VisionDetection,
+    VisionResult,
+    detection_center,
+    pixel_to_direction,
+)
+from frequency_id.vision.logic import Detection, TargetLogic
 
 
 @dataclass(frozen=True)
@@ -145,14 +152,14 @@ class TrackedDroneCamera(DroneCamera):
     def _load_tracker(self):
         if self._tracker is not None:
             return
-        from visual_tracking.core import load_tracker
+        from frequency_id.vision.core import load_tracker
 
         try:
             self._tracker, self._tracker_lost_score = load_tracker(
-                self.tracking.library_path,
+                str(resolve_project_path(self.tracking.library_path)),
                 self.tracking.name,
                 device=self.tracking.device,
-                checkpoint=self.tracking.checkpoint_path,
+                checkpoint=str(resolve_project_path(self.tracking.checkpoint_path)),
             )
         except SystemExit as exc:
             raise RuntimeError(str(exc)) from exc

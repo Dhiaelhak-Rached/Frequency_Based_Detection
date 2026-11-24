@@ -51,7 +51,7 @@ class SimulationLauncherTest(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "sim.run_single_drone_mic",
+                "sim.runners.single_drone_mic",
                 "--low",
                 "2900",
                 "--high",

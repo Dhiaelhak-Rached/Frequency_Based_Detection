@@ -9,12 +9,15 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from audio_manager import AudioBlock
-from detector import DetectionResult, FrequencyDetector
-from direction_suppression import DirectionSuppression, select_front_only_target
-from doa_engine import ArrayDOA, DOAResult
-from geometry import RigGeometry, SOUND_SPEED
-from main import build_guidance_payload
+from frequency_id.acoustics.audio_manager import AudioBlock
+from frequency_id.acoustics.detector import DetectionResult, FrequencyDetector
+from frequency_id.acoustics.direction_suppression import (
+    DirectionSuppression,
+    select_front_only_target,
+)
+from frequency_id.acoustics.doa_engine import ArrayDOA, DOAResult
+from frequency_id.acoustics.geometry import RigGeometry, SOUND_SPEED
+from frequency_id.telemetry import build_guidance_payload
 
 
 @dataclass

@@ -17,6 +17,8 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
+from frequency_id.paths import get_default_rig_config_path
+
 SOUND_SPEED = 343.0  # m/s
 
 
@@ -38,7 +40,7 @@ class RigGeometry:
 
     def __init__(self, config_path: str = None):
         if config_path is None:
-            config_path = str(Path(__file__).parent / "rig_config.json")
+            config_path = str(get_default_rig_config_path())
         self.config_path = config_path
         with open(config_path, "r") as f:
             self.cfg = json.load(f)

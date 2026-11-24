@@ -1,4 +1,1 @@
-from .core import TrackerCore, load_tracker
-from .logic import Detection, TargetLogic
-
-__all__ = ["Detection", "TargetLogic", "TrackerCore", "load_tracker"]
+"""Vendored visual tracker library container (tracker_lib/ kept in place for checkpoint stability)."""

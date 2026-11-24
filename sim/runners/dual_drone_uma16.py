@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import math
 from typing import Optional, Tuple
 
-from guidance import (
+from frequency_id.control.guidance import (
     AcousticObservation,
     GuidanceCommand,
     GuidanceConfig,
@@ -17,10 +17,10 @@ from guidance import (
     GuidanceState,
     wrap_angle_deg,
 )
-from px4_controller import PX4FlightMonitor, validate_observation_metadata
-from sim.acoustic_dsp_sensor import AcousticWavefieldDOASensor
-from sim.real_uma16 import RealUMA16Config, RealUMA16Source
-from sim.sitl_harness import (
+from frequency_id.control.px4 import PX4FlightMonitor, validate_observation_metadata
+from sim.sensors.acoustic_dsp import AcousticWavefieldDOASensor
+from sim.sensors.real_uma16 import RealUMA16Config, RealUMA16Source
+from sim.harness.sitl_harness import (
     AttitudeWatcher,
     MultiPX4SitlCluster,
     PX4InstanceConfig,

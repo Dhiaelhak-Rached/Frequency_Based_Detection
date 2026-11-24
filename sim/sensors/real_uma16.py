@@ -29,7 +29,9 @@ def parse_telemetry_envelope(line: str) -> Optional[Dict]:
     return payload
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from frequency_id.paths import PROJECT_ROOT
+
+REPO_ROOT = PROJECT_ROOT
 
 
 @dataclass(frozen=True)

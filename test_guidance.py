@@ -2,10 +2,10 @@ import unittest
 
 import numpy as np
 
-from audio_manager import AudioBlock, MultiDeviceAudioManager
-from doa_engine import DOAResult
-from geometry import RigGeometry
-from guidance import (
+from frequency_id.acoustics.audio_manager import AudioBlock, MultiDeviceAudioManager
+from frequency_id.acoustics.doa_engine import DOAResult
+from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.control.guidance import (
     AcousticObservation,
     FlightState,
     GuidanceConfig,
@@ -13,7 +13,7 @@ from guidance import (
     GuidanceState,
     wrap_angle_deg,
 )
-from main import build_guidance_payload
+from frequency_id.telemetry import build_guidance_payload
 
 
 def observation(sequence, stamp, azimuth=0.0, elevation=0.0, **changes):

@@ -26,18 +26,29 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from PIL import Image, ImageTk
 
-import jetson_ctl
-
-from geometry import RigGeometry
-from vision_detector import discover_cameras, normalize_camera_source, validate_horizontal_fov
-from detector import DetectionResult, FrequencyDetector
-from direction_suppression import DirectionSuppression, displayable_doa, select_front_only_target
-from doa_engine import ArrayDOA
-from triangulation import TriangulationResult, Triangulator
-from audio_manager import MultiDeviceAudioManager
-from target_state_machine import StateMachineConfig, TargetStateMachine, TrackingMode
-from sim.real_uma16 import RealUMA16Source
-from sim.sitl_harness import PX4SitlProcess
+from frequency_id.acoustics.audio_manager import MultiDeviceAudioManager
+from frequency_id.acoustics.detector import DetectionResult, FrequencyDetector
+from frequency_id.acoustics.direction_suppression import (
+    DirectionSuppression,
+    displayable_doa,
+    select_front_only_target,
+)
+from frequency_id.acoustics.doa_engine import ArrayDOA
+from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.acoustics.triangulation import TriangulationResult, Triangulator
+from frequency_id.control.state_machine import (
+    StateMachineConfig,
+    TargetStateMachine,
+    TrackingMode,
+)
+from frequency_id.ops import jetson_ctl
+from frequency_id.vision.detector import (
+    discover_cameras,
+    normalize_camera_source,
+    validate_horizontal_fov,
+)
+from sim.harness.sitl_harness import PX4SitlProcess
+from sim.sensors.real_uma16 import RealUMA16Source
 
 # Color Palette
 BG = "#161b22"
@@ -61,7 +72,7 @@ def build_simulation_command():
     return [
         sys.executable,
         "-m",
-        "sim.run_single_drone_mic",
+        "sim.runners.single_drone_mic",
         "--low",
         "2900",
         "--high",

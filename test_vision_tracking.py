@@ -4,13 +4,13 @@ import unittest
 
 import numpy as np
 
-from geometry import RigGeometry
-from main import create_vision
+from frequency_id.acoustics.geometry import RigGeometry
+from frequency_id.cli import create_vision
 from test_vision import FakeModel, FakePrediction
-from tracked_camera import LatestRequestQueue, TrackedDroneCamera, TrackingSettings
-from vision_detector import DroneCamera
-from visual_tracking.core import TrackerCore
-from visual_tracking.logic import Detection, TargetLogic
+from frequency_id.vision.tracked_camera import LatestRequestQueue, TrackedDroneCamera, TrackingSettings
+from frequency_id.vision.detector import DroneCamera
+from frequency_id.vision.core import TrackerCore
+from frequency_id.vision.logic import Detection, TargetLogic
 
 
 class FakeTracker:

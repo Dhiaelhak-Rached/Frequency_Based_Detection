@@ -2,14 +2,14 @@ import unittest
 
 import numpy as np
 
-from detector import DetectionResult, FrequencyDetector
-from direction_suppression import (
+from frequency_id.acoustics.detector import DetectionResult, FrequencyDetector
+from frequency_id.acoustics.direction_suppression import (
     DirectionSuppression,
     displayable_doa,
     select_front_only_target,
 )
-from doa_engine import ArrayDOA, DOAResult, SOUND_SPEED
-from geometry import RigGeometry
+from frequency_id.acoustics.doa_engine import ArrayDOA, DOAResult, SOUND_SPEED
+from frequency_id.acoustics.geometry import RigGeometry
 
 
 class FakeDOA:

@@ -21,8 +21,8 @@
   },
   "uma16_front_only": {
     "direction_suppression": {
-      "enabled": true,
-      "bearing_deg": 89.0,
+      "enabled": false,
+      "bearing_deg": 0.0,
       "tolerance_deg": 10.0,
       "max_peak_candidates": 4
     }
@@ -67,13 +67,10 @@
   },
   "vision": {
     "enabled": true,
-    "model_path": "model/Yolo/best.pt",
-    "camera": "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0",
-    "horizontal_fov_deg": 100.0,
-    "camera_fovs": {
-      "/dev/v4l/by-id/usb-Shinetech_ASUS_FHD_webcam_200901010001-video-index0": 75.0,
-      "/dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0": 100.0
-    },
+    "model_path": "model/yolo/best.pt",
+    "camera": "/dev/video0",
+    "horizontal_fov_deg": null,
+    "camera_fovs": {},
     "orientation_deg": 0.0,
     "confidence": 0.5,
     "inference_hz": 10.0,
@@ -118,7 +115,7 @@
         5,
         6
       ],
-      "device_index": 4,
+      "device_index": 0,
       "device_hint": "miniDSP micArray"
     },
     "left": {
@@ -154,7 +151,7 @@
         14,
         15
       ],
-      "device_index": 9,
+      "device_index": 1,
       "device_hint": "UMA16v2",
       "cable": "black USB"
     }

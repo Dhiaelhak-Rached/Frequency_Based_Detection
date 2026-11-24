@@ -15,8 +15,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from guidance import GuidanceState, wrap_angle_deg
-from sim.gazebo_target import (
+from frequency_id.control.guidance import GuidanceState, wrap_angle_deg
+from sim.sensors.gazebo_target import (
     GazeboTargetVisual,
     TargetSample,
     dropout_window_target,
@@ -24,7 +24,7 @@ from sim.gazebo_target import (
     static_target,
     step_change_target,
 )
-from sim.sitl_harness import (
+from sim.harness.sitl_harness import (
     AttitudeWatcher,
     PX4SitlProcess,
     apply_gui_environment,
@@ -36,8 +36,8 @@ from sim.sitl_harness import (
     run_sitl_guidance_scenario,
     write_sim_rig_config,
 )
-from sim.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor
-from sim.visualizer import SimRecord
+from sim.sensors.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor
+from sim.harness.visualizer import SimRecord
 
 
 REPORTS_DIR = REPO_ROOT / "sim" / "reports"

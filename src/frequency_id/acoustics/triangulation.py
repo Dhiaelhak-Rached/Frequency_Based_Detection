@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from geometry import RigGeometry, vector_to_bearing
+from frequency_id.acoustics.geometry import RigGeometry, vector_to_bearing
 
 
 @dataclass

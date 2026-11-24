@@ -3,9 +3,9 @@
 import numpy as np
 import unittest
 
-from guidance import AcousticObservation
-from px4_controller import validate_observation_metadata
-from sim.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor, ideal_body_angles, ned_to_body_rig
+from frequency_id.control.guidance import AcousticObservation
+from frequency_id.control.px4 import validate_observation_metadata
+from sim.sensors.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor, ideal_body_angles, ned_to_body_rig
 
 
 class VirtualUMA16SensorTest(unittest.TestCase):

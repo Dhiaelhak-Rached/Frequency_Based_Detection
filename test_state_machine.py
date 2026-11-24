@@ -2,18 +2,18 @@ import unittest
 
 import numpy as np
 
-from classifier import ClassificationResult
-from detector import DetectionResult
-from doa_engine import DOAResult
-from target_state_machine import (
+from frequency_id.acoustics.classifier import ClassificationResult
+from frequency_id.acoustics.detector import DetectionResult
+from frequency_id.acoustics.doa_engine import DOAResult
+from frequency_id.control.state_machine import (
     StateMachineConfig,
     TargetStateMachine,
     TrackingMode,
     bearing_elevation_to_vector,
     format_fused_state,
 )
-from triangulation import TriangulationResult
-from vision_detector import CameraDirection, VisionDetection, VisionResult
+from frequency_id.acoustics.triangulation import TriangulationResult
+from frequency_id.vision.detector import CameraDirection, VisionDetection, VisionResult
 
 
 def _make_vision(bearing=45.2, elevation=12.4, calibrated=True, error=None):

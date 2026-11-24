@@ -16,6 +16,8 @@ import numpy as np
 import onnxruntime as ort
 import scipy.signal as signal
 
+from frequency_id.paths import MODEL_DIR
+
 
 @dataclass
 class ClassificationResult:
@@ -42,19 +44,13 @@ class DroneClassifier:
         votes_required: Optional[int] = None,
         vote_window: Optional[int] = None,
     ):
-        base_dir = Path(__file__).resolve().parent
-
         # 1. Resolve paths
         if model_path is None:
-            model_path = base_dir / "model" / "mobilenetv2_drone.onnx"
-            if not model_path.exists():
-                model_path = Path("/home/dhia/Desktop/projects/MobileNetV2/model/mobilenetv2_drone.onnx")
+            model_path = MODEL_DIR / "mobilenetv2_drone.onnx"
         self.model_path = Path(model_path)
 
         if metadata_path is None:
-            metadata_path = base_dir / "model" / "metadata.json"
-            if not metadata_path.exists():
-                metadata_path = Path("/home/dhia/Desktop/projects/MobileNetV2/model/metadata.json")
+            metadata_path = MODEL_DIR / "metadata.json"
         self.metadata_path = Path(metadata_path)
 
         # 2. Load metadata defaults if available

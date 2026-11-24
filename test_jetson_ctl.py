@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-import jetson_ctl
+from frequency_id.ops import jetson_ctl
 
 
 class TestJetsonCtl(unittest.TestCase):
@@ -86,7 +86,7 @@ class TestJetsonCtl(unittest.TestCase):
             jetson_ctl.build_config_patch(empty)
 
     def test_run_forwards_cli_args_with_tty_enabled(self):
-        with patch("jetson_ctl.subprocess.run") as mock_run:
+        with patch("frequency_id.ops.jetson_ctl.subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             rc = jetson_ctl.main(["run", "--uma16-front-only", "--low", "900", "--high", "1100"])
             self.assertEqual(rc, 0)
@@ -115,7 +115,7 @@ class TestJetsonCtl(unittest.TestCase):
 
     def test_jetson_remote_tab_handles_json_and_disconnect(self):
         import tkinter as tk
-        from geometry import RigGeometry
+        from frequency_id.acoustics.geometry import RigGeometry
         import tactical_gui
 
         try:
@@ -124,7 +124,7 @@ class TestJetsonCtl(unittest.TestCase):
             self.skipTest("No X display available")
         root.withdraw()
         try:
-            geo = RigGeometry("rig_config.json")
+            geo = RigGeometry()
             frame = tk.Frame(root)
             tab = tactical_gui.JetsonRemoteTab(frame, root, geo)
             sample = {

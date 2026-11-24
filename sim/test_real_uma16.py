@@ -7,21 +7,21 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from guidance import AcousticObservation, FlightState, GuidanceConfig, GuidanceController, GuidanceState
-from px4_controller import validate_observation_metadata
-from sim.real_uma16 import RealUMA16Config, RealUMA16Source
-from sim.run_single_drone_mic import (
+from frequency_id.control.guidance import AcousticObservation, FlightState, GuidanceConfig, GuidanceController, GuidanceState
+from frequency_id.control.px4 import validate_observation_metadata
+from sim.sensors.real_uma16 import RealUMA16Config, RealUMA16Source
+from sim.runners.single_drone_mic import (
     DirectionSmoother,
     build_parser as build_single_drone_parser,
     select_single_drone_command,
 )
-from sim.sitl_harness import (
+from sim.harness.sitl_harness import (
     DEFAULT_FOLLOW_OFFSET_XYZ,
     assert_sitl_endpoint,
     set_gazebo_follow_target,
     spawn_gazebo_motion_reference_arena,
 )
-from sim.visualizer import Live3DGuidanceVisualizer, SimRecord, format_desk_alignment_cue
+from sim.harness.visualizer import Live3DGuidanceVisualizer, SimRecord, format_desk_alignment_cue
 
 
 def _make_telemetry_line(
@@ -306,8 +306,8 @@ class RealUMA16BridgeTest(unittest.TestCase):
 
     def test_set_gazebo_follow_target_configures_third_person_follow(self):
         ok_proc = MagicMock(returncode=0, stdout="data: true\n")
-        with patch("sim.sitl_harness.subprocess.run", side_effect=[ok_proc, ok_proc]) as run_mock, patch(
-            "sim.sitl_harness.time.sleep"
+        with patch("sim.harness.sitl_harness.subprocess.run", side_effect=[ok_proc, ok_proc]) as run_mock, patch(
+            "sim.harness.sitl_harness.time.sleep"
         ) as sleep_mock:
             self.assertTrue(set_gazebo_follow_target("x500_0"))
         self.assertEqual(run_mock.call_count, 2)
@@ -319,7 +319,7 @@ class RealUMA16BridgeTest(unittest.TestCase):
         self.assertIn("x: -1.80, y: 0.00, z: 0.55", run_mock.call_args_list[1].args[0])
 
         fail_proc = MagicMock(returncode=0, stdout="data: false\n")
-        with patch("sim.sitl_harness.subprocess.run", return_value=fail_proc):
+        with patch("sim.harness.sitl_harness.subprocess.run", return_value=fail_proc):
             self.assertFalse(set_gazebo_follow_target("x500_0"))
 
     def test_mic_fallback_works_when_elevation_is_none(self):
@@ -376,7 +376,7 @@ class RealUMA16BridgeTest(unittest.TestCase):
 
     def test_spawn_gazebo_motion_reference_arena_creates_visual_only_landmarks(self):
         ok_proc = MagicMock(returncode=0, stdout="data: true\n")
-        with patch("sim.sitl_harness.subprocess.run", return_value=ok_proc) as run_mock:
+        with patch("sim.harness.sitl_harness.subprocess.run", return_value=ok_proc) as run_mock:
             self.assertTrue(spawn_gazebo_motion_reference_arena("default", hover_alt_m=10.0))
         run_mock.assert_called_once()
         cmd = run_mock.call_args.args[0]

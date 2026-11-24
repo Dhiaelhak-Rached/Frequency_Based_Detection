@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from vision_detector import (
+from frequency_id.vision.detector import (
     DetectionLock,
     DroneCamera,
     VisionDetection,

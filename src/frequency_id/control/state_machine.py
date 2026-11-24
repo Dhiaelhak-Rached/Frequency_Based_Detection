@@ -12,11 +12,11 @@ from enum import Enum
 import math
 from typing import Optional, Tuple
 
-from classifier import ClassificationResult
-from detector import DetectionResult
-from doa_engine import DOAResult
-from triangulation import TriangulationResult
-from vision_detector import VisionResult
+from frequency_id.acoustics.classifier import ClassificationResult
+from frequency_id.acoustics.detector import DetectionResult
+from frequency_id.acoustics.doa_engine import DOAResult
+from frequency_id.acoustics.triangulation import TriangulationResult
+from frequency_id.vision.detector import VisionResult
 
 
 class TrackingMode(str, Enum):

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
-from guidance import (
+from frequency_id.control.guidance import (
     AcousticObservation,
     FlightState,
     GuidanceCommand,
@@ -25,14 +25,20 @@ from guidance import (
     GuidanceController,
     GuidanceState,
 )
-from px4_controller import PX4FlightMonitor, validate_observation_metadata
-from sim.gazebo_target import GazeboTargetVisual, TargetSample, TargetTrajectoryFn
-from sim.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor
-from sim.visualizer import Live3DGuidanceVisualizer, SimRecord
+from frequency_id.control.px4 import PX4FlightMonitor, validate_observation_metadata
+from frequency_id.paths import (
+    PROJECT_ROOT,
+    REPORTS_DIR,
+    get_default_rig_config_path,
+    get_px4_dir,
+)
+from sim.sensors.gazebo_target import GazeboTargetVisual, TargetSample, TargetTrajectoryFn
+from sim.sensors.virtual_uma16 import AcousticSensorConfig, VirtualUMA16Sensor
+from sim.harness.visualizer import Live3DGuidanceVisualizer, SimRecord
 
 
-PX4_DIR = Path("/home/dhia/PX4-Autopilot")
-REPO_ROOT = Path(__file__).resolve().parent.parent
+PX4_DIR = get_px4_dir()
+REPO_ROOT = PROJECT_ROOT
 
 
 def assert_sitl_endpoint(address: str):
@@ -47,7 +53,7 @@ def assert_sitl_endpoint(address: str):
 
 
 def load_sim_guidance_config(overrides: Optional[Dict] = None) -> Tuple[GuidanceConfig, str, float]:
-    with open(REPO_ROOT / "rig_config.json", "r") as f:
+    with open(get_default_rig_config_path(), "r") as f:
         raw = json.load(f).get("guidance", {})
     merged = dict(raw)
     if overrides:
@@ -59,7 +65,7 @@ def load_sim_guidance_config(overrides: Optional[Dict] = None) -> Tuple[Guidance
 
 def write_sim_rig_config(dest: Path, overrides: Optional[Dict] = None) -> Path:
     """Create a simulation-only rig_config.json copy with guidance.enabled=true."""
-    with open(REPO_ROOT / "rig_config.json", "r") as f:
+    with open(get_default_rig_config_path(), "r") as f:
         cfg = json.load(f)
     guidance_cfg = dict(cfg.get("guidance", {}))
     guidance_cfg["enabled"] = True
@@ -115,7 +121,7 @@ class PX4SitlProcess:
     ):
         self.px4_dir = px4_dir
         self.headless = headless
-        self.log_path = log_path or (REPO_ROOT / "sim" / "reports" / "px4_sitl.log")
+        self.log_path = log_path or (REPORTS_DIR / "px4_sitl.log")
         self.proc: Optional[subprocess.Popen] = None
         self._log_file = None
 

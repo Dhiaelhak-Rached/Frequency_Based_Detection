@@ -29,7 +29,13 @@ FrameResult = namedtuple("FrameResult", "stamp box score mode trk_ms weak send")
 
 def load_tracker(lib, name, device=None, checkpoint=None):
     """Import the trackers' code from tracker_lib/ (common/, trackers/, external/, config.json) and build `name`."""
-    lib = os.path.abspath(os.path.expanduser(lib))
+    from frequency_id.paths import resolve_project_path
+
+    expanded = os.path.expanduser(lib)
+    if not os.path.isabs(expanded) and not os.path.isfile(os.path.join(expanded, "common", "runners.py")):
+        lib = str(resolve_project_path(expanded))
+    else:
+        lib = os.path.abspath(expanded)
     if not os.path.isfile(os.path.join(lib, "common", "runners.py")):
         raise RuntimeError(f"tracker_lib '{lib}' does not contain common/runners.py: set the tracker_lib parameter "
                            "to the drone_target_tracker/tracker_lib folder of the workspace source")

@@ -12,9 +12,9 @@ import subprocess
 import time
 from typing import Dict, Optional, Tuple
 
-from guidance import AcousticObservation, wrap_angle_deg
-from sim.real_uma16 import RealUMA16Config, RealUMA16Source
-from sim.sitl_harness import (
+from frequency_id.control.guidance import AcousticObservation, wrap_angle_deg
+from sim.sensors.real_uma16 import RealUMA16Config, RealUMA16Source
+from sim.harness.sitl_harness import (
     AttitudeWatcher,
     DEFAULT_FOLLOW_OFFSET_XYZ,
     PX4SitlProcess,

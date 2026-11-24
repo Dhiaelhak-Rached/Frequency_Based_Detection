@@ -3,15 +3,15 @@
 import numpy as np
 import unittest
 
-from guidance import AcousticObservation, GuidanceCommand, GuidanceState
-from sim.acoustic_dsp_sensor import AcousticWavefieldDOASensor
-from sim.run_dual_drone_uma16 import (
+from frequency_id.control.guidance import AcousticObservation, GuidanceCommand, GuidanceState
+from sim.sensors.acoustic_dsp import AcousticWavefieldDOASensor
+from sim.runners.dual_drone_uma16 import (
     apply_fixed_follow_distance,
     build_parser,
     compute_auto_target_command,
     compute_target_drone_command,
 )
-from sim.sitl_harness import PX4InstanceConfig, assert_sitl_endpoint
+from sim.harness.sitl_harness import PX4InstanceConfig, assert_sitl_endpoint
 
 
 class DualDroneUMA16Test(unittest.TestCase):

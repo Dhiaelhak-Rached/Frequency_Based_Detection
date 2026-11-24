@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from doa_engine import ArrayDOA, CircularTracker, ElevationTracker, SOUND_SPEED
-from geometry import RigGeometry, bearing_to_vector
+from frequency_id.acoustics.doa_engine import ArrayDOA, CircularTracker, ElevationTracker, SOUND_SPEED
+from frequency_id.acoustics.geometry import RigGeometry, bearing_to_vector
 
 
 UMA16_LAYOUT = {
