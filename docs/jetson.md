@@ -219,7 +219,7 @@ For each array, confirm:
 - Frequency and direction update.
 - Classification progresses from `BUFFERING` to a live percentage and vote count.
 - Single-array mode displays direction only, without range or coordinates.
-- UMA-16 modes estimate elevation from the four microphone rows and show `ABOVE`, `BELOW`, `LEVEL`, or `UNCERTAIN` without fixed Z or source height.
+- UMA-16 modes derive azimuth and elevation from one joint 3D search over full microphone geometry and show `ABOVE`, `BELOW`, `LEVEL`, or `UNCERTAIN` without fixed Z or source height.
 - UMA-16 front-only mode uses the UMA-16 device selected by `--dev-left` and reports 3D direction relative to its 0° forward-facing orientation.
 
 ### 7. Test the complete dual-array system
@@ -256,6 +256,8 @@ Verify the classification tile, vote counter, tactical marker, **Require Drone I
 ### 8. Perform a stability check before deployment use
 
 Run the complete dual-array CLI or GUI for at least 15 minutes with a known sound source. Confirm continuous classification/location updates, no audio-stream failures, no growing lag, and acceptable CPU usage. Separately run the selected camera with DyHiT for 15 minutes, including target occlusion and reappearance. Confirm `DRONE TRACKING` continues between YOLO checks, loss clears direction, reacquisition works, and `TrackedDroneCamera.get_metrics()` shows a bounded one-item detector queue. At 30 FPS, the acceptance targets are tracker p95 <= 33 ms and tracker-frame output p95 <= 66 ms; record actual values and do not claim the low-latency gate if they are exceeded.
+
+For independent known-angle acoustic validation, follow [the offline replay and capture protocol](doa_replay.md). Store raw multichannel clips in gitignored `data/doa_replay/`, record the exact Jetson rig/calibration identity and measured ground truth, and run the same manifest on the Jetson to obtain real angle, validity, false-stability, runtime, and memory evidence. Synthetic results and desktop benchmarks are not Jetson hardware-accuracy results.
 
 Only after manual operation is stable should autostart/systemd setup or CUDA/TensorRT optimization be considered. Any future inference-provider change must rerun `test_classifier.py` and the simulation benchmark.
 

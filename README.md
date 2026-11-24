@@ -17,8 +17,8 @@ and YOLO camera detection—presented together in a tactical GUI and a headless 
 | Capability | What it provides |
 |---|---|
 | **Frequency detection** | Narrowband FFT detection inside a configurable target band |
-| **Acoustic direction** | Frequency-gated SRP-PHAT azimuth with temporal confidence tracking |
-| **3D sound direction** | UMA-16 row-based elevation and a clear 3D unit-vector arrow |
+| **Acoustic direction** | Frequency-gated, multi-frame SRP-PHAT with fresh temporal confidence tracking |
+| **3D sound direction** | Joint azimuth/elevation estimation and a clear 3D unit-vector arrow |
 | **2D localization** | Weighted bearing-ray intersection for dual-array position and range |
 | **Audio identification** | MobileNetV2 ONNX drone probability with temporal voting |
 | **Camera identification** | Selectable-camera YOLO detection with boxes, confidence, and direction |
@@ -39,8 +39,8 @@ flowchart LR
 
     subgraph Acoustics["ACOUSTIC PIPELINE"]
         FFT["Target-band<br/>frequency detector"]
-        AZ["SRP-PHAT<br/>azimuth"]
-        EL["UMA-16 row steering<br/>elevation"]
+        FRAMES["Overlapping Hann frames<br/>coherence + SNR spectra"]
+        AZ["Joint 3D SRP-PHAT<br/>azimuth + elevation"]
         TRI["Dual-array<br/>triangulation"]
         VEC["3D unit<br/>direction vector"]
     end
@@ -54,8 +54,8 @@ flowchart LR
 
     U8 --> FFT
     U16 --> FFT
-    FFT --> AZ
-    AZ --> EL --> VEC
+    FFT --> FRAMES --> AZ
+    AZ --> VEC
     AZ --> TRI
     FFT --> MNV
     CAMERA["Selected camera"] --> YOLO
@@ -94,6 +94,12 @@ Both arrays use vertical mounting. For a vertical array, `orientation_deg` is th
 outward face normal, local `+90°` is the viewer's right, and azimuth scans are limited
 to ±90° around that normal because of front/back ambiguity. Weak UMA-16 channels can
 be excluded with `active_channels`.
+
+`RigGeometry` is the single source of microphone coordinates/heights, channel delays,
+phase response, and sound speed for the shared DOA factory used by the CLI, GUI, and
+simulation. Non-null `temperature_c` determines sound speed instead of the configured
+`sound_speed`; the effective value is logged. Delay and phase calibration default to
+zero/disabled until measured—no hardware correction values are invented.
 
 ## Quick Start
 
@@ -150,15 +156,23 @@ python3 main.py cli --low 900 --high 1100 --threshold -65
 | **UMA-16 front only** | `python3 main.py gui --uma16-front-only` | Forward-mounted 3D direction using the UMA-16 device ID |
 | **Simulation** | Add `--simulate` | Synthetic acoustic input without microphone hardware |
 
-In UMA-16 direction-only modes, the existing azimuth estimate is preserved and a
-second narrowband SRP-PHAT stage uses the four physical microphone rows to estimate
-elevation. No triangulation, source distance, source height, coordinates, or fixed Z
-value is used.
+Elevation-capable arrays derive azimuth and elevation from the same joint 3D
+SRP-PHAT peak using full local microphone coordinates. Flat arrays retain a 2D search
+because elevation is unobservable. The estimator averages auto/cross spectra over
+2048-sample Hann frames with 50% overlap, derives bin quality from inter-microphone
+coherence and saturating SNR, caps individual bin weights, and refines the steering
+frequency of a dominant narrowband tone between FFT bins. No triangulation, source
+distance, source height, coordinates, or fixed Z value is used.
 
 The 3D arrow points **toward the sound source**. Positive elevation means above the
 array; negative elevation means below. If the vertical estimate lacks prominence or
 temporal consistency, the interface reports **ELEVATION UNCERTAIN** and draws no arrow
 instead of assuming the source is level.
+
+Azimuth and elevation stability require a fresh, acceptable current measurement.
+Capture timestamps are used when available, with a monotonic fallback; stale history
+expires and rejected/missed observations are never smoothed into a new stable result.
+Disabling tracking does not mutate tracker history.
 
 ### Fixed Sound Direction Suppression
 
@@ -374,7 +388,7 @@ Slow speed alone is not a collision-avoidance mechanism.
 ## Verification
 
 ```bash
-# Complete automated suite (122 tests: acoustics, vision, tracking, control, GUI, ops, sim)
+# Complete automated suite (190 tests: acoustics, vision, tracking, control, GUI, ops, sim/replay)
 python3 -m pytest -q
 
 # Physical rig geometry checks
@@ -382,12 +396,22 @@ python3 main.py test-geometry
 
 # Offline classification and triangulation benchmark
 python3 main.py simulate --target-x -0.6 --target-y 1.5
+
+# Independent synthetic DOA replay with angle, validity, stability, runtime, and memory metrics
+PYTHONPATH=src:. python -m sim.harness.doa_replay config/doa_replay.example.json
+
+# Focused lint for the DOA/replay implementation and its tests
+ruff check src/frequency_id/acoustics/doa_engine.py sim/harness/doa_replay.py \
+  tests/sim/test_doa_replay.py tests/conftest.py
 ```
 
-For physical validation, play a target-band tone to the left, right, above, and below
-the installed UMA-16. Confirm both angle signs and arrow directions. Real elevation
-accuracy depends on frequency, microphone matching, signal-to-noise ratio, mounting,
-and room reflections; synthetic validation does not replace this hardware check.
+For physical validation, follow the [offline replay and known-angle capture protocol](docs/doa_replay.md).
+Play a target-band tone to the left, right, above, and below the installed UMA-16,
+survey the true angles/distance, and record raw multichannel clips under the gitignored
+`data/doa_replay/` directory. Confirm both angle signs and arrow directions. Real
+accuracy depends on frequency, microphone matching, SNR, mounting, calibration, and
+room reflections; synthetic validation does not replace this hardware check, and no
+hardware accuracy limit is claimed without real measurements.
 
 ## Troubleshooting
 
@@ -409,19 +433,20 @@ and room reflections; synthetic validation does not replace this hardware check.
 | [`pyproject.toml`](pyproject.toml) | Package metadata, optional extras (`vision`, `control`, `sim`, `dev`), console scripts, `pytest` & `ruff` config |
 | [`main.py`](main.py), [`px4_controller.py`](px4_controller.py), [`jetson_ctl.py`](jetson_ctl.py) | Thin root compatibility shims forwarding to `frequency_id.cli`, `frequency_id.control.px4`, and `frequency_id.ops.jetson_ctl` |
 | [`config/rig_config.example.json`](config/rig_config.example.json) | Clean default rig configuration template (bootstraps local untracked `rig_config.json` on first run) |
+| [`config/doa_replay.example.json`](config/doa_replay.example.json) | Runnable synthetic replay manifest; real clips stay in gitignored `data/doa_replay/` |
 | [`src/frequency_id/paths.py`](src/frequency_id/paths.py) | Canonical project-root, config, model, report, and `PX4_DIR` path resolver |
 | [`src/frequency_id/telemetry.py`](src/frequency_id/telemetry.py) | Shared `@JSON:` telemetry and guidance payload serialization |
 | [`src/frequency_id/cli.py`](src/frequency_id/cli.py) | Unified CLI/GUI launcher, arguments, factories, and hardware diagnostics |
-| [`src/frequency_id/acoustics/`](src/frequency_id/acoustics/) | `geometry`, `audio_manager`, `detector`, `direction_suppression`, `doa_engine`, `triangulation`, `classifier` |
+| [`src/frequency_id/acoustics/`](src/frequency_id/acoustics/) | `geometry`, shared `doa_factory`, joint 3D `doa_engine`, audio/detection, suppression, triangulation, classification |
 | [`src/frequency_id/vision/`](src/frequency_id/vision/) | `detector` (YOLO11 & FOV projection), `tracked_camera` (async DyHiT/YOLO), `core`, `logic` |
 | [`src/frequency_id/control/`](src/frequency_id/control/) | `state_machine` (vision/audio fusion), `guidance` (fail-closed angle guidance), `px4` (MAVSDK Offboard adapter) |
 | [`src/frequency_id/gui/`](src/frequency_id/gui/) | Modular Tkinter UI: `app`, `widgets`, `sim_launcher`, `jetson_tab` |
 | [`src/frequency_id/ops/jetson_ctl.py`](src/frequency_id/ops/jetson_ctl.py) | Environment-driven SSH/rsync remote controller for the Jetson Orin rig |
-| [`sim/`](sim/) | PX4 SITL + Gazebo Garden simulation suite organized into `sensors/`, `harness/`, and `runners/` |
+| [`sim/`](sim/) | PX4 SITL + Gazebo Garden suite plus offline DOA replay, organized into `sensors/`, `harness/`, and `runners/` |
 | [`model/`](model/) | MobileNetV2 ONNX audio assets (`mobilenetv2_drone.onnx`, `metadata.json`, `reference_outputs.npz`) and `yolo/best.pt` |
 | [`visual_tracking/tracker_lib/`](visual_tracking/tracker_lib/) | Vendored DyHiT tracker library & checkpoint directory (`DyHiT_ep0060.pth.tar`, gitignored) |
 | [`tests/`](tests/) | Consolidated `pytest` suite (`tests/unit/{acoustics,vision,control,gui,ops}/`, `tests/sim/`, `conftest.py`, `helpers.py`) |
-| [`docs/`](docs/) | Deployment & architecture guides (`jetson.md`, `vision.md`, `upstream-tracking.md`, `reports/sitl_validation_report.md`) |
+| [`docs/`](docs/) | Deployment, architecture, DOA replay/capture protocol (`doa_replay.md`), and validation reports |
 
 ---
 
