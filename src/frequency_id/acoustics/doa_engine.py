@@ -220,6 +220,9 @@ class ArrayDOA:
         tracker_timeout_s: float = 0.6,
         steering_chunk: int = 256,
         frequency_chunk: int = 32,
+        frame_size: int = 2048,
+        frame_hop: Optional[int] = None,
+        max_bin_weight: float = 0.25,
     ):
         self.array_id = array_id
         self.mic_positions = mic_positions_local
@@ -233,6 +236,9 @@ class ArrayDOA:
         self.sound_speed = float(sound_speed)
         self.steering_chunk = int(steering_chunk)
         self.frequency_chunk = int(frequency_chunk)
+        self.frame_size = int(frame_size)
+        self.frame_hop = self.frame_size // 2 if frame_hop is None else int(frame_hop)
+        self.max_bin_weight = float(max_bin_weight)
         if self.mount not in ("flat", "vertical"):
             raise ValueError(f"Unsupported array mount: {self.mount!r}")
         if self.sample_rate <= 0 or not 0.0 < self.grid_deg <= 90.0:
@@ -241,6 +247,10 @@ class ArrayDOA:
             raise ValueError("Sound speed must be finite and positive")
         if self.steering_chunk < 1 or self.frequency_chunk < 1:
             raise ValueError("Steering and frequency chunks must be positive")
+        if self.frame_size < 16 or not 0 < self.frame_hop <= self.frame_size:
+            raise ValueError("FFT frame size and hop are invalid")
+        if not math.isfinite(self.max_bin_weight) or not 0.0 < self.max_bin_weight <= 1.0:
+            raise ValueError("Maximum bin weight must be in (0, 1]")
         if not math.isfinite(tracker_timeout_s) or tracker_timeout_s <= 0.0:
             raise ValueError("Tracker timeout must be finite and positive")
 
@@ -474,11 +484,50 @@ class ArrayDOA:
                 return "invalid_band"
         return None
 
-    def _spectra(self, x, target_freq, target_bandwidth_hz, band):
+    def _fft_frames(self, x):
         n = len(x)
-        windowed = x * np.hanning(n)[:, None]
-        spectrum = np.fft.rfft(windowed, axis=0)
-        frequencies = np.fft.rfftfreq(n, 1.0 / self.sample_rate)
+        frame_count = 1 if n <= self.frame_size else int(np.ceil((n - self.frame_size) / self.frame_hop)) + 1
+        padded_length = (frame_count - 1) * self.frame_hop + self.frame_size
+        if padded_length > n:
+            x = np.pad(x, ((0, padded_length - n), (0, 0)))
+        frames = np.stack(
+            [x[index * self.frame_hop:index * self.frame_hop + self.frame_size] for index in range(frame_count)],
+            axis=0,
+        )
+        window = np.hanning(self.frame_size)
+        return np.fft.rfft(frames * window[None, :, None], n=self.frame_size, axis=1)
+
+    def _cap_bin_weights(self, weights):
+        weights = np.asarray(weights, dtype=float)
+        if weights.ndim != 1 or weights.size == 0 or not np.all(np.isfinite(weights)):
+            raise ValueError("Invalid beamforming weights")
+        weights = np.maximum(weights, 0.0)
+        weight_sum = float(np.sum(weights))
+        if weight_sum <= 0.0:
+            raise ValueError("Invalid beamforming weights")
+        normalized = weights / weight_sum
+        cap = max(1.0 / len(normalized), self.max_bin_weight)
+        return np.minimum(normalized, cap)
+
+    @staticmethod
+    def _refine_narrowband_frequency(frequencies, energy, keep):
+        selected_indices = np.flatnonzero(keep)
+        peak_index = int(selected_indices[np.argmax(energy[keep])])
+        if peak_index <= 0 or peak_index >= len(frequencies) - 1:
+            return None
+        if energy[peak_index] < 0.5 * float(np.sum(energy[keep])):
+            return None
+        log_energy = np.log(np.maximum(energy[peak_index - 1:peak_index + 2], 1e-30))
+        denominator = log_energy[0] - 2.0 * log_energy[1] + log_energy[2]
+        if not math.isfinite(denominator) or denominator >= 0.0:
+            return float(frequencies[peak_index])
+        fraction = float(np.clip(0.5 * (log_energy[0] - log_energy[2]) / denominator, -0.5, 0.5))
+        refined = float(frequencies[peak_index] + fraction * (frequencies[1] - frequencies[0]))
+        return refined if math.isfinite(refined) and refined > 0.0 else None
+
+    def _spectra(self, x, target_freq, target_bandwidth_hz, band):
+        spectrum = self._fft_frames(x)
+        frequencies = np.fft.rfftfreq(self.frame_size, 1.0 / self.sample_rate)
         nyquist_limit = self.sample_rate / 2.0 - 50.0
         if band is not None:
             search_lo = max(20.0, float(band[0]) - 25.0)
@@ -493,8 +542,8 @@ class ArrayDOA:
         search_hi = min(self.sample_rate / 2.0, search_hi)
         if search_hi <= search_lo:
             return None
-        keep = (frequencies >= search_lo) & (frequencies <= search_hi)
-        keep &= frequencies <= self.max_direction_freq_hz
+        search_mask = (frequencies >= search_lo) & (frequencies <= search_hi)
+        keep = search_mask & (frequencies <= self.max_direction_freq_hz)
         if target_freq is not None:
             keep &= frequencies >= target_freq - target_bandwidth_hz / 2.0
             keep &= frequencies <= target_freq + target_bandwidth_hz / 2.0
@@ -503,14 +552,22 @@ class ArrayDOA:
             keep &= frequencies <= band[1]
         if not np.any(keep):
             return None
-        energy = np.mean(np.abs(spectrum) ** 2, axis=1)
+
+        auto = np.mean(np.abs(spectrum) ** 2, axis=0)
+        energy = np.mean(auto, axis=1)
         selected_energy = energy[keep]
         if not np.all(np.isfinite(selected_energy)) or float(np.max(selected_energy)) <= 1e-20:
             return None
-        keep &= energy >= float(np.max(selected_energy)) * 0.05
+        peak_energy = float(np.max(selected_energy))
+        keep &= energy >= peak_energy * 1e-4
         if not np.any(keep):
             return None
-        selected = spectrum[keep]
+        steering_frequencies = frequencies[keep]
+        if target_freq is not None:
+            narrowband_frequency = self._refine_narrowband_frequency(frequencies, energy, keep)
+            if narrowband_frequency is not None:
+                steering_frequencies = np.full_like(steering_frequencies, narrowband_frequency)
+        selected = spectrum[:, keep, :]
         f = frequencies[keep]
         if np.any(self.delays != 0.0) or self.phase_response:
             alignment = np.exp(2j * np.pi * f[:, None] * self.delays[None, :] / self.sample_rate)
@@ -519,14 +576,31 @@ class ArrayDOA:
                     calibration_f, calibration_phase = self.phase_response[ch]
                     phase = np.interp(f, calibration_f, calibration_phase)
                     alignment[:, index] *= np.exp(-1j * np.deg2rad(phase))
-            selected = selected * alignment
-        normalized = selected / (np.abs(selected) + 1e-12)
-        cross = normalized[:, :, None] * normalized[:, None, :].conj()
-        weights = np.mean(np.abs(selected) ** 2, axis=1)
-        weight_sum = float(np.sum(weights))
-        if not math.isfinite(weight_sum) or weight_sum <= 0.0:
+            selected = selected * alignment[None, :, :]
+
+        selected_auto = np.mean(np.abs(selected) ** 2, axis=0)
+        cross = np.einsum("fkm,fkn->kmn", selected, selected.conj()) / selected.shape[0]
+        if not np.all(np.isfinite(cross)) or not np.all(np.isfinite(selected_auto)):
+            raise ValueError("Invalid cross spectra")
+        denominator = np.sqrt(selected_auto[:, :, None] * selected_auto[:, None, :])
+        phat = cross / (denominator + 1e-20)
+        upper = np.triu_indices(len(self.channels), k=1)
+        coherence = np.mean(np.abs(phat[:, upper[0], upper[1]]), axis=1)
+
+        selected_energy = energy[keep]
+        noise_candidates = energy[search_mask & np.isfinite(energy)]
+        noise_floor = float(np.median(noise_candidates)) if noise_candidates.size else 0.0
+        snr = np.maximum(selected_energy, 0.0) / max(noise_floor, 1e-20)
+        snr_quality = snr / (1.0 + snr)
+        quality = coherence ** 2 * snr_quality
+        if target_freq is not None:
+            distance = np.abs(f - target_freq) / (target_bandwidth_hz / 2.0)
+            target_taper = np.cos(0.5 * np.pi * np.clip(distance, 0.0, 1.0)) ** 4
+            quality = quality * target_taper
+        weights = self._cap_bin_weights(quality)
+        if not np.all(np.isfinite(weights)) or np.any(weights < 0.0):
             raise ValueError("Invalid beamforming weights")
-        return f, cross.astype(np.complex64), weights / weight_sum
+        return steering_frequencies, phat.astype(np.complex64), weights
 
     def estimate(
         self,
