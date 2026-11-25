@@ -619,7 +619,7 @@ class ArrayDOA:
             return self._miss("invalid_timestamp", track, now_value if math.isfinite(now_value) else None)
         age = now_value - timestamp
         if age > self.tracker.max_age:
-            return self._miss("stale_observation", track, timestamp)
+            return self._miss("stale_observation", False, timestamp)
         if age < -self.tracker.max_age:
             return self._miss("invalid_timestamp", track, timestamp)
         band_error = self._validate_band(target_freq, target_bandwidth_hz, band)

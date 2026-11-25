@@ -14,6 +14,7 @@ from tkinter import messagebox, scrolledtext, ttk
 from typing import Dict, List, Optional
 
 from PIL import Image, ImageTk
+import numpy as np
 
 from frequency_id.acoustics.geometry import RigGeometry
 from frequency_id.gui.px4_launcher import (
@@ -69,6 +70,7 @@ class JetsonRemoteTab:
         self._log_history: List[str] = []
         self._audio_devices: List[Dict] = []
         self._camera_fovs: Dict[str, float] = {}
+        self._last_json_data: Optional[Dict] = None
 
         self._build_ui()
         self._update_suppression_controls()
@@ -345,10 +347,14 @@ class JetsonRemoteTab:
         self.var_dev_front = tk.StringVar(value="4")
         self.combo_dev_front = ttk.Combobox(mic_row, textvariable=self.var_dev_front, width=14)
         self.combo_dev_front.pack(side="left", padx=(4, 8))
+        self.combo_dev_front.bind("<<ComboboxSelected>>", lambda _e: self.on_apply_audio())
+        self.combo_dev_front.bind("<Return>", lambda _e: self.on_apply_audio())
         tk.Label(mic_row, text="UMA-16 ID:", bg=PANEL, fg=FG).pack(side="left")
         self.var_dev_left = tk.StringVar(value="0")
         self.combo_dev_left = ttk.Combobox(mic_row, textvariable=self.var_dev_left, width=14)
         self.combo_dev_left.pack(side="left", padx=4)
+        self.combo_dev_left.bind("<<ComboboxSelected>>", lambda _e: self.on_apply_audio())
+        self.combo_dev_left.bind("<Return>", lambda _e: self.on_apply_audio())
         tk.Button(
             mic_row, text="Refresh Mics", command=self.on_refresh_all,
             bg="#21262d", fg=ACCENT, relief="flat", padx=4,
@@ -361,20 +367,28 @@ class JetsonRemoteTab:
         entry_low = tk.Entry(band_row, textvariable=self.var_low, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
         entry_low.pack(side="left", padx=(4, 8))
         entry_low.bind("<Return>", lambda _e: self.on_apply_audio())
+        entry_low.bind("<FocusOut>", lambda _e: self.on_apply_audio())
         tk.Label(band_row, text="High:", bg=PANEL, fg=FG).pack(side="left")
         self.var_high = tk.StringVar(value="5000.0")
         entry_high = tk.Entry(band_row, textvariable=self.var_high, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
         entry_high.pack(side="left", padx=4)
         entry_high.bind("<Return>", lambda _e: self.on_apply_audio())
+        entry_high.bind("<FocusOut>", lambda _e: self.on_apply_audio())
 
         quality_row = tk.Frame(audio_settings, bg=PANEL)
         quality_row.pack(fill="x", pady=2)
         tk.Label(quality_row, text="Threshold:", bg=PANEL, fg=FG).pack(side="left")
         self.var_threshold = tk.StringVar(value="-70.0")
-        tk.Entry(quality_row, textvariable=self.var_threshold, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=(4, 8))
+        entry_thresh = tk.Entry(quality_row, textvariable=self.var_threshold, width=6, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_thresh.pack(side="left", padx=(4, 8))
+        entry_thresh.bind("<Return>", lambda _e: self.on_apply_audio())
+        entry_thresh.bind("<FocusOut>", lambda _e: self.on_apply_audio())
         tk.Label(quality_row, text="Avg:", bg=PANEL, fg=FG).pack(side="left")
         self.var_avg = tk.StringVar(value="4")
-        tk.Entry(quality_row, textvariable=self.var_avg, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=4)
+        entry_avg = tk.Entry(quality_row, textvariable=self.var_avg, width=4, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_avg.pack(side="left", padx=4)
+        entry_avg.bind("<Return>", lambda _e: self.on_apply_audio())
+        entry_avg.bind("<FocusOut>", lambda _e: self.on_apply_audio())
         tk.Button(
             quality_row, text="Apply Audio", font=("Helvetica", 9, "bold"),
             bg="#21262d", fg=ACCENT, activebackground="#30363d", activeforeground=FG,
@@ -401,6 +415,7 @@ class JetsonRemoteTab:
         )
         self.suppress_bearing_entry.pack(side="left", padx=(4, 8))
         self.suppress_bearing_entry.bind("<Return>", lambda _e: self.on_apply_suppression())
+        self.suppress_bearing_entry.bind("<FocusOut>", lambda _e: self.on_apply_suppression())
         tk.Label(suppression_values, text="±°:", bg=PANEL, fg=FG).pack(side="left")
         self.var_sup_tol = tk.StringVar(value="10.0")
         self.suppress_tolerance_entry = tk.Entry(
@@ -409,6 +424,7 @@ class JetsonRemoteTab:
         )
         self.suppress_tolerance_entry.pack(side="left", padx=4)
         self.suppress_tolerance_entry.bind("<Return>", lambda _e: self.on_apply_suppression())
+        self.suppress_tolerance_entry.bind("<FocusOut>", lambda _e: self.on_apply_suppression())
         self.suppress_apply_button = tk.Button(
             suppression_values, text="Apply", bg="#21262d", fg=ACCENT, relief="flat",
             command=self.on_apply_suppression,
@@ -459,6 +475,7 @@ class JetsonRemoteTab:
         )
         self.camera_fov_entry.pack(side="left", padx=4)
         self.camera_fov_entry.bind("<Return>", lambda _e: self.on_apply_fov())
+        self.camera_fov_entry.bind("<FocusOut>", lambda _e: self.on_apply_fov())
         tk.Button(
             fov_row, text="Apply FOV", command=self.on_apply_fov,
             bg="#21262d", fg=ACCENT, relief="flat",
@@ -495,6 +512,7 @@ class JetsonRemoteTab:
         tk.Checkbutton(
             mode_settings, text="Require Drone ID for Lock", variable=self.var_require_drone,
             bg=PANEL, fg=FG, selectcolor="#0d1117", activebackground=PANEL, activeforeground=FG,
+            command=self.on_toggle_require_drone,
         ).pack(anchor="w", pady=(4, 0))
 
     def _create_metric(self, parent: tk.Frame, title: str, init_val: str) -> tk.Label:
@@ -539,6 +557,26 @@ class JetsonRemoteTab:
         except ValueError:
             sup_b, sup_t = 60.0, 10.0
 
+        try:
+            low = float(self.var_low.get())
+            high = float(self.var_high.get())
+            thresh = float(self.var_threshold.get())
+        except ValueError:
+            low, high, thresh = 200.0, 5000.0, -70.0
+        if high <= low:
+            high = low + 100.0
+        freqs = np.linspace(0.0, self.geo.sample_rate / 2.0, 256)
+        mags = np.full(len(freqs), -100.0, dtype=float)
+        draw_spectrum_canvas(
+            self.canvas_spec,
+            freqs=freqs,
+            mags=mags,
+            band_low=low,
+            band_high=high,
+            threshold_db=thresh,
+            peak_freq=None,
+        )
+
         draw_radar_canvas(
             self.canvas_radar,
             geo=self.geo,
@@ -573,8 +611,14 @@ class JetsonRemoteTab:
 
     def on_zoom_change(self, val):
         self.map_scale = float(val)
-        if not self._cli_running:
+        if not self._cli_running or self._last_json_data is None:
             self._redraw_static_views()
+        else:
+            self._render_json_data(self._last_json_data, update_camera=False)
+
+    def on_toggle_require_drone(self):
+        if self._cli_running:
+            self._restart_cli()
 
     def on_array_mode_change(self, selected: str):
         if selected == "front" and self.var_front_only.get():
@@ -663,6 +707,8 @@ class JetsonRemoteTab:
             self._restart_cli()
 
     def on_apply_audio(self):
+        if not self._cli_running:
+            self._redraw_static_views()
         self.on_apply_config()
         if self._cli_running:
             self._restart_cli()
@@ -908,6 +954,10 @@ class JetsonRemoteTab:
             data = json.loads(raw_json)
         except json.JSONDecodeError:
             return
+        self._last_json_data = data
+        self._render_json_data(data, update_camera=True)
+
+    def _render_json_data(self, data: Dict, update_camera: bool = True):
         self.conn_status.configure(text="CONNECTED", bg="#1b3a24", fg=OK)
 
         fused = data.get("fused", {})
@@ -1006,13 +1056,14 @@ class JetsonRemoteTab:
             )
 
         # 5. Camera Frame
-        frame_b64 = cam.get("frame_jpg_b64")
-        if frame_b64:
-            self._show_camera_frame_b64(frame_b64)
-        elif not self.var_vision_enabled.get():
-            self._show_camera_text("CAMERA OFF")
-        elif not self.var_stream_video.get():
-            self._show_camera_text(f"VIDEO STREAM OFF ({cam_status})")
+        if update_camera:
+            frame_b64 = cam.get("frame_jpg_b64")
+            if frame_b64:
+                self._show_camera_frame_b64(frame_b64)
+            elif not self.var_vision_enabled.get():
+                self._show_camera_text("CAMERA OFF")
+            elif not self.var_stream_video.get():
+                self._show_camera_text(f"VIDEO STREAM OFF ({cam_status})")
 
         # 6. 2D Tactical Map
         selected_ids = (

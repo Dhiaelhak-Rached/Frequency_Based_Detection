@@ -55,7 +55,10 @@ class FrequencyDetector:
         if threshold_dbfs is not None:
             self.threshold_dbfs = float(threshold_dbfs)
         if average_blocks is not None:
-            self.average_blocks = max(1, int(average_blocks))
+            new_avg = max(1, int(average_blocks))
+            if new_avg != self.average_blocks:
+                self.average_blocks = new_avg
+                self.mag_history = self.mag_history[-self.average_blocks:]
 
     def _refine_peak(self, mags: np.ndarray, best_idx: int) -> Tuple[float, float]:
         offset = 0.0

@@ -7,8 +7,9 @@ import queue
 import time
 import tkinter as tk
 from tkinter import ttk
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
+import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
@@ -94,11 +95,12 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # Core Engines
+        default_det = geometry.cfg.get("default_detection", {})
         self.detector = FrequencyDetector(
             sample_rate=geometry.sample_rate,
-            block_duration=0.2,
-            average_blocks=4,
-            threshold_dbfs=-65.0,
+            block_duration=float(default_det.get("block_duration", 0.2)),
+            average_blocks=int(default_det.get("average_blocks", 4)),
+            threshold_dbfs=float(default_det.get("threshold_dbfs", -65.0)),
         )
         self.doa_engines: Dict[str, ArrayDOA] = {}
         for arr_id in self.geo.arrays:
@@ -126,11 +128,23 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         self._px4_queue: queue.Queue = queue.Queue()
         self._px4_terminal_event = None
         self._px4_reader_thread = None
+        self._last_vision_frame_stamp = None
+        self._last_audio_sequences: Dict[str, int] = {}
+        self._last_detection: Optional[DetectionResult] = None
+        self._last_triangulation: TriangulationResult = TriangulationResult(
+            False, None, None, None, None, 0.0, 0, {}
+        )
+        self._last_single_doa = None
+        self._last_single_array_id: Optional[str] = None
+        self._last_doa_errors: Dict[str, Optional[str]] = {}
+        self._last_suppressed: bool = False
 
         self._build_ui()
+        if hasattr(self, "canvas_radar"):
+            self._refresh_visuals()
         if self.vision is not None and self.var_vision_enabled.get():
             self.vision.start()
-        self.root.after(100, self._update_loop)
+        self.root.after(50, self._update_loop)
 
     def _build_ui(self):
         style = ttk.Style()
@@ -406,11 +420,17 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         tk.Label(mic_row, text="UMA-8 ID:", bg=PANEL, fg=FG).pack(side="left")
         default_front = str(self.geo.cfg.get("arrays", {}).get("front", {}).get("device_index", 4))
         self.var_dev_front = tk.StringVar(value=default_front)
-        tk.Entry(mic_row, textvariable=self.var_dev_front, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=(4, 12))
+        entry_dev_front = tk.Entry(mic_row, textvariable=self.var_dev_front, width=4, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_dev_front.pack(side="left", padx=(4, 12))
+        entry_dev_front.bind("<Return>", lambda event: self.on_apply_band())
+        entry_dev_front.bind("<FocusOut>", lambda event: self.on_apply_band())
         tk.Label(mic_row, text="UMA-16 ID:", bg=PANEL, fg=FG).pack(side="left")
         default_left = str(self.geo.cfg.get("arrays", {}).get("left", {}).get("device_index", 1))
         self.var_dev_left = tk.StringVar(value=default_left)
-        tk.Entry(mic_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=4)
+        entry_dev_left = tk.Entry(mic_row, textvariable=self.var_dev_left, width=4, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_dev_left.pack(side="left", padx=4)
+        entry_dev_left.bind("<Return>", lambda event: self.on_apply_band())
+        entry_dev_left.bind("<FocusOut>", lambda event: self.on_apply_band())
 
         band_row = tk.Frame(audio_settings, bg=PANEL)
         band_row.pack(fill="x", pady=2)
@@ -419,20 +439,28 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         entry_low = tk.Entry(band_row, textvariable=self.var_low, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
         entry_low.pack(side="left", padx=(4, 8))
         entry_low.bind("<Return>", lambda event: self.on_apply_band())
+        entry_low.bind("<FocusOut>", lambda event: self.on_apply_band())
         tk.Label(band_row, text="High:", bg=PANEL, fg=FG).pack(side="left")
         self.var_high = tk.StringVar(value=str(self.geo.cfg["default_detection"]["target_high_hz"]))
         entry_high = tk.Entry(band_row, textvariable=self.var_high, width=7, font=("Monospace", 9, "bold"), bg="#0d1117", fg=FG, insertbackground=FG)
         entry_high.pack(side="left", padx=4)
         entry_high.bind("<Return>", lambda event: self.on_apply_band())
+        entry_high.bind("<FocusOut>", lambda event: self.on_apply_band())
 
         quality_row = tk.Frame(audio_settings, bg=PANEL)
         quality_row.pack(fill="x", pady=2)
         tk.Label(quality_row, text="Threshold:", bg=PANEL, fg=FG).pack(side="left")
         self.var_thresh = tk.StringVar(value=str(self.geo.cfg["default_detection"]["threshold_dbfs"]))
-        tk.Entry(quality_row, textvariable=self.var_thresh, width=6, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=(4, 8))
+        entry_thresh = tk.Entry(quality_row, textvariable=self.var_thresh, width=6, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_thresh.pack(side="left", padx=(4, 8))
+        entry_thresh.bind("<Return>", lambda event: self.on_apply_band())
+        entry_thresh.bind("<FocusOut>", lambda event: self.on_apply_band())
         tk.Label(quality_row, text="Avg:", bg=PANEL, fg=FG).pack(side="left")
         self.var_avg = tk.StringVar(value=str(self.geo.cfg["default_detection"]["average_blocks"]))
-        tk.Entry(quality_row, textvariable=self.var_avg, width=4, bg="#0d1117", fg=FG, insertbackground=FG).pack(side="left", padx=4)
+        entry_avg = tk.Entry(quality_row, textvariable=self.var_avg, width=4, bg="#0d1117", fg=FG, insertbackground=FG)
+        entry_avg.pack(side="left", padx=4)
+        entry_avg.bind("<Return>", lambda event: self.on_apply_band())
+        entry_avg.bind("<FocusOut>", lambda event: self.on_apply_band())
         tk.Button(
             quality_row, text="Apply Audio", font=("Helvetica", 9, "bold"),
             bg="#21262d", fg=ACCENT, activebackground="#30363d", activeforeground=FG,
@@ -469,6 +497,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         )
         self.suppress_bearing_entry.pack(side="left", padx=(4, 8))
         self.suppress_bearing_entry.bind("<Return>", lambda event: self.on_apply_suppression())
+        self.suppress_bearing_entry.bind("<FocusOut>", lambda event: self.on_apply_suppression())
         tk.Label(suppression_values, text="±°:", bg=PANEL, fg=FG).pack(side="left")
         self.var_suppress_tolerance = tk.StringVar(value=f"{self.suppression.tolerance_deg:g}")
         self.suppress_tolerance_entry = tk.Entry(
@@ -481,6 +510,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         )
         self.suppress_tolerance_entry.pack(side="left", padx=4)
         self.suppress_tolerance_entry.bind("<Return>", lambda event: self.on_apply_suppression())
+        self.suppress_tolerance_entry.bind("<FocusOut>", lambda event: self.on_apply_suppression())
         self.suppress_apply_button = tk.Button(
             suppression_values,
             text="Apply",
@@ -532,6 +562,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         self.camera_combo.pack(side="left", fill="x", expand=True, padx=4)
         self.camera_combo.bind("<<ComboboxSelected>>", self.on_camera_selected)
         self.camera_combo.bind("<Return>", self.on_camera_selected)
+        self.camera_combo.bind("<FocusOut>", self.on_camera_selected)
 
         fov_row = tk.Frame(camera_settings, bg=PANEL)
         fov_row.pack(fill="x", pady=2)
@@ -549,6 +580,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         )
         self.camera_fov_entry.pack(side="left", padx=4)
         self.camera_fov_entry.bind("<Return>", lambda event: self.on_apply_fov())
+        self.camera_fov_entry.bind("<FocusOut>", lambda event: self.on_apply_fov())
         tk.Button(
             fov_row,
             text="Apply FOV",
@@ -601,6 +633,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             selectcolor="#0d1117",
             activebackground=PANEL,
             activeforeground=FG,
+            command=self.on_require_drone_change,
         ).pack(anchor="w", pady=(4, 0))
         self._update_suppression_controls()
 
@@ -651,6 +684,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             self.vision_result = None
         self.save_config()
         self._update_vision()
+        self._refresh_visuals()
 
     def on_apply_fov(self):
         if self.vision is None:
@@ -667,6 +701,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         vision_cfg["horizontal_fov_deg"] = fov
         self.save_config()
         self._update_vision()
+        self._refresh_visuals()
 
     def on_toggle_vision(self):
         if self.vision is None:
@@ -678,11 +713,13 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             self.vision.stop()
             self.vision_result = None
         self._update_vision()
+        self._refresh_visuals()
 
     def _update_vision(self):
         if self.vision is None or not self.var_vision_enabled.get():
             self.lbl_vision.configure(text="OFF", fg=MUTED)
             self.camera_photo = None
+            self._last_vision_frame_stamp = None
             self.camera_video_lbl.configure(image="", text="CAMERA OFF")
             return
 
@@ -713,14 +750,27 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
 
         if result.frame is None:
             self.camera_photo = None
+            self._last_vision_frame_stamp = None
             text = result.error or "CONNECTING TO CAMERA..."
             self.camera_video_lbl.configure(image="", text=text, width=48, height=11)
             return
 
-        rgb = np.ascontiguousarray(result.frame[:, :, ::-1])
+        frame_stamp = (result.timestamp, id(result.frame))
+        if self.camera_photo is not None and getattr(self, "_last_vision_frame_stamp", None) == frame_stamp:
+            return
+        self._last_vision_frame_stamp = frame_stamp
+
+        frame = result.frame
+        h, w = frame.shape[:2]
+        max_w = max(320, self.camera_video_lbl.winfo_width())
+        max_h = 240
+        scale = min(max_w / max(1, w), max_h / max(1, h), 1.0)
+        if scale < 1.0:
+            new_w = max(1, int(round(w * scale)))
+            new_h = max(1, int(round(h * scale)))
+            frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
-        width = max(320, self.camera_video_lbl.winfo_width())
-        image.thumbnail((width, 240))
         self.camera_photo = ImageTk.PhotoImage(image=image)
         self.camera_video_lbl.configure(
             image=self.camera_photo,
@@ -729,8 +779,82 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             height=image.height,
         )
 
+    def _current_band_and_thresh(self) -> Tuple[float, float, float]:
+        default_det = self.geo.cfg.get("default_detection", {})
+        try:
+            low = float(self.var_low.get())
+        except ValueError:
+            low = float(default_det.get("target_low_hz", 200.0))
+        try:
+            high = float(self.var_high.get())
+        except ValueError:
+            high = float(default_det.get("target_high_hz", 5000.0))
+        if high <= low:
+            high = low + 100.0
+        try:
+            thresh = float(self.var_thresh.get())
+        except ValueError:
+            thresh = float(getattr(self.detector, "threshold_dbfs", default_det.get("threshold_dbfs", -65.0)))
+        return low, high, thresh
+
+    def _refresh_visuals(self):
+        selected_ids = self._selected_array_ids()
+        single_id = selected_ids[0] if len(selected_ids) == 1 else None
+        det = getattr(self, "_last_detection", None)
+        tri = getattr(self, "_last_triangulation", None) or TriangulationResult(
+            False, None, None, None, None, 0.0, 0, {}
+        )
+        single_doa = getattr(self, "_last_single_doa", None) if single_id == getattr(self, "_last_single_array_id", None) else None
+        low, high, thresh = self._current_band_and_thresh()
+        if det is not None:
+            updated_det = replace(
+                det,
+                threshold_db=thresh,
+                band=(low, high),
+                detected=(det.peak_db is not None and det.peak_db >= thresh and low <= (det.peak_freq or 0.0) <= high)
+                if not getattr(self, "_last_suppressed", False)
+                else False,
+            )
+            self._draw_spectrum(updated_det)
+        else:
+            freqs = getattr(self.detector, "freqs", np.linspace(0.0, self.geo.sample_rate / 2.0, 256))
+            mags = np.full(len(freqs), -100.0, dtype=float)
+            draw_spectrum_canvas(
+                self.canvas_spec,
+                freqs=freqs,
+                mags=mags,
+                band_low=low,
+                band_high=high,
+                threshold_db=thresh,
+                peak_freq=None,
+            )
+        active_doa = single_doa if (det is not None and det.detected and not getattr(self, "_last_suppressed", False)) else None
+        self._draw_tactical_map(tri, active_doa, single_id)
+        self._draw_direction_3d(active_doa, single_id)
+
     def on_zoom_change(self, val):
         self.map_scale = float(val)
+        self._refresh_visuals()
+
+    def on_require_drone_change(self):
+        self.require_drone = bool(self.var_require_drone.get())
+        det = getattr(self, "_last_detection", None)
+        tri = getattr(self, "_last_triangulation", None) or TriangulationResult(
+            False, None, None, None, None, 0.0, 0, {}
+        )
+        single_doa = getattr(self, "_last_single_doa", None)
+        single_id = getattr(self, "_last_single_array_id", None)
+        doa_errors = getattr(self, "_last_doa_errors", {})
+        suppressed = getattr(self, "_last_suppressed", False)
+        self._update_fused_state(
+            detection=det,
+            single_doa=single_doa,
+            triangulation=tri,
+            suppressed=suppressed,
+        )
+        if det is not None and not suppressed and (self.is_active or self.simulate):
+            self._update_telemetry(det, tri, doa_errors, single_doa, single_id)
+        self._refresh_visuals()
 
     def _reset_classifier(self):
         if self.classifier is not None:
@@ -776,7 +900,9 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             self.status_lbl.configure(text=f"INVALID SUPPRESSION: {exc}", fg=WARN, bg="#2b2010")
             return
         self.doa_engines["left"].reset()
+        self._last_single_doa = None
         self.save_config()
+        self._refresh_visuals()
         self.status_lbl.configure(
             text=(
                 f"SUPPRESSION {self.suppression.bearing_deg:.1f}° ± {self.suppression.tolerance_deg:.1f}°"
@@ -790,11 +916,18 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
     def on_toggle_sim(self):
         self.simulate = self.var_sim.get()
         self.audio_mgr.simulate = self.simulate
+        self._last_audio_sequences = {}
         self._reset_classifier()
         self._update_classification_metric()
         if self.simulate:
             self.status_lbl.configure(text="SIMULATION ACTIVE", fg=OK)
         else:
+            self._last_detection = None
+            self._last_triangulation = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
+            self._last_single_doa = None
+            self._last_suppressed = False
+            self._clear_target_telemetry()
+            self._refresh_visuals()
             self.status_lbl.configure(text="STANDBY" if not self.is_active else "LISTENING", fg=FG)
 
     def _device_map(self):
@@ -829,12 +962,17 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             freq_lo=200.0,
             freq_hi=16000.0,
         )
+        self._last_audio_sequences = {}
+        self._last_triangulation = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
+        self._last_single_doa = None
+        self._last_suppressed = False
         self._clear_target_telemetry()
         self._reset_classifier()
         for doa_eng in self.doa_engines.values():
             doa_eng.reset()
         selected_ids = self._selected_array_ids()
         single_id = selected_ids[0] if len(selected_ids) == 1 else None
+        self._last_single_array_id = single_id
         empty_tri = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
         self._draw_tactical_map(empty_tri, None, single_id)
         self._draw_direction_3d(None, single_id)
@@ -855,6 +993,7 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
                 return
 
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
+            self._last_audio_sequences = {}
             self._reset_classifier()
             self.save_config()
             self.audio_mgr.start(device_map=self._device_map(), array_ids=self._selected_array_ids())
@@ -865,10 +1004,12 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         else:
             self.audio_mgr.stop()
             self.is_active = False
+            self._last_audio_sequences = {}
             self._reset_classifier()
             self._update_classification_metric()
             self.btn_toggle.configure(text="START LISTENING", bg="#238636", activebackground="#2ea043")
             self.status_lbl.configure(text="STANDBY", fg=MUTED)
+            self._refresh_visuals()
 
     def on_apply_band(self):
         try:
@@ -876,11 +1017,27 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             high = float(self.var_high.get())
             thresh = float(self.var_thresh.get())
             avg = int(self.var_avg.get())
+            if high <= low or avg < 1:
+                self.status_lbl.configure(text="INVALID AUDIO SETTINGS", fg=WARN, bg="#2b2010")
+                return
+            prev_front = self.geo.cfg.get("arrays", {}).get("front", {}).get("device_index")
+            prev_left = self.geo.cfg.get("arrays", {}).get("left", {}).get("device_index")
             self.detector.set_parameters(threshold_dbfs=thresh, average_blocks=avg)
+            self.detector.reset()
+            self._last_audio_sequences = {}
             self.save_config()
-            self.status_lbl.configure(text=f"BAND UPDATED: {low:g}-{high:g} Hz", fg=ACCENT)
+            new_front = self.geo.cfg.get("arrays", {}).get("front", {}).get("device_index")
+            new_left = self.geo.cfg.get("arrays", {}).get("left", {}).get("device_index")
+            if self.is_active and not self.simulate and (new_front != prev_front or new_left != prev_left):
+                self.audio_mgr.stop()
+                self.audio_mgr.start(device_map=self._device_map(), array_ids=self._selected_array_ids())
+            self._refresh_visuals()
+            self.status_lbl.configure(
+                text=f"AUDIO UPDATED: {low:g}-{high:g} Hz @ {thresh:g} dBFS",
+                fg=ACCENT,
+            )
         except ValueError:
-            pass
+            self.status_lbl.configure(text="INVALID AUDIO SETTINGS", fg=WARN, bg="#2b2010")
 
     def save_config(self):
         try:
@@ -926,7 +1083,8 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             self._process_frame()
         else:
             self._update_fused_state()
-        self.root.after(100, self._update_loop)
+            self._refresh_visuals()
+        self.root.after(50, self._update_loop)
 
     def _process_frame(self):
         try:
@@ -934,14 +1092,72 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             high = float(self.var_high.get())
         except ValueError:
             low, high = 900.0, 1100.0
+        if high <= low:
+            high = low + 100.0
+        try:
+            thresh = float(self.var_thresh.get())
+            if thresh != self.detector.threshold_dbfs:
+                self.detector.set_parameters(threshold_dbfs=thresh)
+        except ValueError:
+            pass
+        avg_changed = False
+        try:
+            avg = int(self.var_avg.get())
+            if avg >= 1 and avg != self.detector.average_blocks:
+                self.detector.set_parameters(average_blocks=avg)
+                self.detector.reset()
+                avg_changed = True
+        except ValueError:
+            pass
 
         blocks = self.audio_mgr.get_latest_blocks()
         if not blocks:
+            self._last_detection = None
+            self._last_triangulation = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
+            self._last_single_doa = None
+            self._last_suppressed = False
             self._reset_classifier()
             self._update_classification_metric()
             self._clear_target_telemetry()
             self.status_lbl.configure(text="WAITING FOR AUDIO INPUT", fg=WARN, bg="#2b2010")
             return
+
+        selected_ids = self._selected_array_ids()
+        current_sequences = {
+            arr_id: int(getattr(blocks[arr_id], "sequence", 0))
+            for arr_id in selected_ids
+            if arr_id in blocks
+        }
+        prev_sequences = getattr(self, "_last_audio_sequences", None)
+        last_det = getattr(self, "_last_detection", None)
+        if (
+            not avg_changed
+            and prev_sequences
+            and current_sequences
+            and current_sequences == prev_sequences
+            and last_det is not None
+            and last_det.band == (low, high)
+            and last_det.threshold_db == self.detector.threshold_dbfs
+        ):
+            single_array_id = selected_ids[0] if len(selected_ids) == 1 else None
+            single_doa = getattr(self, "_last_single_doa", None)
+            tri_res = getattr(self, "_last_triangulation", None) or TriangulationResult(
+                False, None, None, None, None, 0.0, 0, {}
+            )
+            suppressed = getattr(self, "_last_suppressed", False)
+            self._update_fused_state(
+                detection=last_det,
+                single_doa=single_doa,
+                triangulation=tri_res,
+                suppressed=suppressed,
+            )
+            self._draw_tactical_map(
+                tri_res,
+                single_doa if (last_det.detected and not suppressed) else None,
+                single_array_id,
+            )
+            return
+        self._last_audio_sequences = current_sequences
 
         # 1. Frequency Detection (on front array ch0 or first available block)
         det_block = blocks.get("front", next(iter(blocks.values())))
@@ -978,22 +1194,22 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
         prominences = {}
         doa_errors = {}
         doa_results = {}
-        selected_ids = self._selected_array_ids()
-        for arr_id in selected_ids:
-            if arr_id in blocks:
-                doa_eng = self.doa_engines[arr_id]
-                target_f = det_res.peak_freq if det_res.detected else None
-                res = front_doa if arr_id == "left" and front_doa is not None else doa_eng.estimate(
-                    blocks[arr_id].samples,
-                    target_freq=target_f,
-                    band=(low, high),
-                    captured_at=blocks[arr_id].captured_at,
-                    now=now,
-                )
-                doa_results[arr_id] = res
-                bearings[arr_id] = res.global_angle_deg
-                prominences[arr_id] = res.prominence
-                doa_errors[arr_id] = res.error
+        if det_res.detected:
+            for arr_id in selected_ids:
+                if arr_id in blocks:
+                    doa_eng = self.doa_engines[arr_id]
+                    target_f = det_res.peak_freq
+                    res = front_doa if arr_id == "left" and front_doa is not None else doa_eng.estimate(
+                        blocks[arr_id].samples,
+                        target_freq=target_f,
+                        band=(low, high),
+                        captured_at=blocks[arr_id].captured_at,
+                        now=now,
+                    )
+                    doa_results[arr_id] = res
+                    bearings[arr_id] = res.global_angle_deg
+                    prominences[arr_id] = res.prominence
+                    doa_errors[arr_id] = res.error
 
         single_array_id = selected_ids[0] if len(selected_ids) == 1 else None
         single_doa = doa_results.get(single_array_id) if single_array_id else None
@@ -1018,6 +1234,13 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
                 prominences,
                 stable={arr_id: res.stable for arr_id, res in doa_results.items()},
             )
+
+        self._last_detection = det_res
+        self._last_triangulation = tri_res
+        self._last_single_doa = single_doa
+        self._last_single_array_id = single_array_id
+        self._last_doa_errors = doa_errors
+        self._last_suppressed = False
 
         # 3. Update Telemetry & UI
         self._update_fused_state(
@@ -1066,6 +1289,12 @@ class TacticalGUI(SimulationLauncherMixin, PX4FlightTestMixin):
             self.lbl_tracker_mode.configure(text="SEARCHING", fg=MUTED)
 
     def _show_suppressed_target(self, detection):
+        self._last_detection = detection
+        self._last_triangulation = TriangulationResult(False, None, None, None, None, 0.0, 0, {})
+        self._last_single_doa = None
+        self._last_single_array_id = "left"
+        self._last_doa_errors = {}
+        self._last_suppressed = True
         self._reset_classifier()
         self._update_classification_metric()
         self._update_fused_state(detection=detection, suppressed=True)

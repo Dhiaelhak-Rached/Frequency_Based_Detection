@@ -353,10 +353,12 @@ def cmd_gui(args):
         app.var_high.set(str(args.high))
     if args.threshold is not None:
         app.var_thresh.set(str(args.threshold))
+        app.detector.set_parameters(threshold_dbfs=float(args.threshold))
     if args.dev_front is not None:
         app.var_dev_front.set(str(args.dev_front))
     if args.dev_left is not None:
         app.var_dev_left.set(str(args.dev_left))
+    app._refresh_visuals()
     root.mainloop()
 
 
@@ -449,6 +451,12 @@ def cmd_cli(args):
     stream_video = bool(getattr(args, "stream_video", False))
 
     audio_mgr.start(device_map=dev_map if dev_map else None, array_ids=selected_ids)
+    last_audio_sequences = {}
+    det_res = None
+    single_doa = None
+    tri = None
+    doa_errors = {}
+    suppressed = False
     try:
         while True:
             now = time.monotonic()
@@ -472,73 +480,86 @@ def cmd_cli(args):
                 time.sleep(0.1)
                 continue
 
-            det_block = blocks.get("front", next(iter(blocks.values())))
-            det_channel = det_block.samples[:, 0]
-            det_res = detector.process(det_channel, args.low, args.high)
-            front_doa = None
-            suppressed = False
-            if args.uma16_front_only:
-                selection = select_front_only_target(
-                    det_res,
-                    blocks["left"].samples,
-                    doa_engines["left"],
-                    (args.low, args.high),
-                    suppression,
-                    captured_at=blocks["left"].captured_at,
-                    now=now,
-                )
-                det_res = selection.detection
-                if selection.suppressed:
-                    if classifier is not None:
-                        classifier.reset()
-                    classification = None
-                    last_classification = 0.0
-                    suppressed = True
-                else:
-                    front_doa = selection.doa
-
-            if not suppressed:
-                if not det_res.detected:
-                    if classifier is not None:
-                        classifier.reset()
-                    classification = None
-                    last_classification = 0.0
-                elif classifier is not None and now - last_classification >= classifier_hop:
-                    classification = classifier.classify(det_channel)
-                    last_classification = now
-
-            single_doa = None
-            tri = None
-            doa_errors = {}
-            if not suppressed and det_res.detected:
-                bearings = {}
-                proms = {}
-                results = {}
-                for arr_id, doa in doa_engines.items():
-                    if arr_id in blocks:
-                        res = front_doa if arr_id == "left" and front_doa is not None else doa.estimate(
-                            blocks[arr_id].samples,
-                            target_freq=det_res.peak_freq,
-                            band=(args.low, args.high),
-                            captured_at=blocks[arr_id].captured_at,
-                            now=now,
-                        )
-                        results[arr_id] = res
-                        bearings[arr_id] = res.global_angle_deg
-                        proms[arr_id] = res.prominence
-                        if res.error:
-                            doa_errors[arr_id] = res.error
-
-                if single_id:
-                    single_doa = results.get(single_id)
-                    if single_doa is not None and not displayable_doa(single_doa, suppression):
-                        suppressed = True
-                else:
-                    tri = triangulator.triangulate(
-                        bearings,
-                        proms,
-                        stable={arr_id: res.stable for arr_id, res in results.items()},
+            current_sequences = {
+                arr_id: int(getattr(blocks[arr_id], "sequence", 0))
+                for arr_id in selected_ids
+                if arr_id in blocks
+            }
+            is_new_audio = not (
+                last_audio_sequences
+                and current_sequences
+                and current_sequences == last_audio_sequences
+                and det_res is not None
+            )
+            if is_new_audio:
+                last_audio_sequences = current_sequences
+                det_block = blocks.get("front", next(iter(blocks.values())))
+                det_channel = det_block.samples[:, 0]
+                det_res = detector.process(det_channel, args.low, args.high)
+                front_doa = None
+                suppressed = False
+                if args.uma16_front_only:
+                    selection = select_front_only_target(
+                        det_res,
+                        blocks["left"].samples,
+                        doa_engines["left"],
+                        (args.low, args.high),
+                        suppression,
+                        captured_at=blocks["left"].captured_at,
+                        now=now,
                     )
+                    det_res = selection.detection
+                    if selection.suppressed:
+                        if classifier is not None:
+                            classifier.reset()
+                        classification = None
+                        last_classification = 0.0
+                        suppressed = True
+                    else:
+                        front_doa = selection.doa
+
+                if not suppressed:
+                    if not det_res.detected:
+                        if classifier is not None:
+                            classifier.reset()
+                        classification = None
+                        last_classification = 0.0
+                    elif classifier is not None and now - last_classification >= classifier_hop:
+                        classification = classifier.classify(det_channel)
+                        last_classification = now
+
+                single_doa = None
+                tri = None
+                doa_errors = {}
+                if not suppressed and det_res.detected:
+                    bearings = {}
+                    proms = {}
+                    results = {}
+                    for arr_id, doa in doa_engines.items():
+                        if arr_id in blocks:
+                            res = front_doa if arr_id == "left" and front_doa is not None else doa.estimate(
+                                blocks[arr_id].samples,
+                                target_freq=det_res.peak_freq,
+                                band=(args.low, args.high),
+                                captured_at=blocks[arr_id].captured_at,
+                                now=now,
+                            )
+                            results[arr_id] = res
+                            bearings[arr_id] = res.global_angle_deg
+                            proms[arr_id] = res.prominence
+                            if res.error:
+                                doa_errors[arr_id] = res.error
+
+                    if single_id:
+                        single_doa = results.get(single_id)
+                        if single_doa is not None and not displayable_doa(single_doa, suppression):
+                            suppressed = True
+                    else:
+                        tri = triangulator.triangulate(
+                            bearings,
+                            proms,
+                            stable={arr_id: res.stable for arr_id, res in results.items()},
+                        )
 
             fused = state_machine.from_pipeline_outputs(
                 now=now,

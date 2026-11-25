@@ -284,3 +284,19 @@ def test_monotonic_fallback_is_used_without_capture_timestamp(monkeypatch):
     result = estimate(engine, block)
     assert result.error is None
     assert engine.tracker.timestamps[-1] == pytest.approx(50.0)
+
+
+def test_stale_observation_does_not_wipe_valid_tracker_history():
+    positions = vertical_uma16_positions()
+    engine = make_uma16_doa()
+    block = plane_wave_block(positions, 15.0, 8.0)
+    for captured_at in (10.0, 10.2, 10.4):
+        res = estimate(engine, block, captured_at=captured_at, now=captured_at)
+    assert res.stable
+    assert len(engine.tracker.estimates) == 3
+
+    stale = estimate(engine, block, captured_at=9.0, now=10.5)
+    assert_miss(stale, "stale_observation")
+    assert len(engine.tracker.estimates) == 3
+    assert engine.tracker.timestamps[-1] == pytest.approx(10.4)
+
